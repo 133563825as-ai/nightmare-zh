@@ -51,6 +51,42 @@ object BackendProcess {
     /** Newest-first, same convention as the harness log. */
     val output = ArrayDeque<String>()
 
+    /**
+     * ⭐⭐⭐ **Why the backend gave up, in one line a person can act on.**
+     *
+     * ⚠⚠⚠ Reported 2026-09-21: importing a community FLUX checkpoint failed
+     * with *"the backend would not start — see Settings > Diagnostics"*, and
+     * **Settings has had no Diagnostics section since 2026-09-19**. Worse than a
+     * stale pointer: [HarnessOps] already `say`s the whole backend log, but
+     * `say` writes to the HARNESS log, which lived on exactly the screen that
+     * was removed. So the answer existed, in full, and there was no way to read
+     * it. The backend had said:
+     * `parsing ComfyUI quantization metadata tensor failed:
+     * 'model.diffusion_model.double_blocks.0.img_attn.proj.comfy_quant'`
+     * — precise, actionable, and invisible.
+     *
+     * ⭐⭐ **The FIRST error, not the last.** [output] is newest-first, and the
+     * last thing a failing launch prints is always the most generic: `engine
+     * create failed: new_sd_ctx failed`, then `Pipeline initialization failed!`.
+     * The root cause is the FIRST error the process emitted, which is the
+     * OLDEST line here. Taking the newest would have reported "new_sd_ctx
+     * failed" to a user whose actual problem was a quantisation format.
+     *
+     * ⚠ Null when nothing looks like an error — the caller then says only that
+     * it would not start, rather than inventing a reason.
+     */
+    fun failureReason(): String? = synchronized(output) {
+        val raw = output.lastOrNull {
+            it.contains("[ ERROR ]") || it.trimStart().startsWith("ERROR")
+        } ?: return null
+        // The engine prefixes `   522.3ms [ ERROR ] [dit] model_loader.cpp:270  - `.
+        // Everything before the ` - ` is timing and provenance, and none of it
+        // means anything to the person reading the chip.
+        val afterLevel = raw.substringAfter("[ ERROR ]", raw)
+        val message = if (" - " in afterLevel) afterLevel.substringAfter(" - ") else afterLevel
+        return message.trim().removePrefix("ERROR:").trim().takeIf { it.isNotBlank() }
+    }
+
     val isRunning: Boolean get() = process?.isAlive == true
 
     /**
@@ -194,6 +230,71 @@ object BackendProcess {
     }.getOrNull()
 
     /**
+     * ⭐⭐ **DIAGNOSTIC: the DiT device spec**, from
+     * `Download/nightmare-dit-backend.txt` — e.g.
+     * `diffusion=CPU,te=CPU,vae=CPU`. Absent (the normal case) leaves the
+     * backend's own `diffusion=HTP0,te=HTP0,vae=HTP0`.
+     *
+     * ⚠⚠ It exists for ONE question that nothing else can ask: a LoRA applied
+     * at runtime logs `apply_loras completed` and 160/160 tensors bound, and the
+     * picture comes back byte-identical to the one without it. Either the
+     * adapter never reaches the HTP-resident weights or something else is wrong,
+     * and the only way to tell them apart is to run the SAME build on the CPU
+     * path (`docs/ROADMAP.md` §2f).
+     *
+     * ⚠ Same shape as [readSpillFillOverride] deliberately — a file in
+     * Downloads, read at launch, no UI, nothing shipped enabled.
+     */
+    private fun readDitBackendOverride(context: Context): String? =
+        readDiagnosticFile(context, "nightmare-dit-backend.txt")?.takeIf { it.isNotEmpty() }
+
+    /**
+     * ⚠⚠⚠ **In the app's OWN external files dir, not `Download/`.** Under
+     * scoped storage this app can `stat` a file another app owns in Downloads
+     * but cannot READ it — `isFile` says true and `readText` throws, and a
+     * `runCatching` around both turns that into a silent null. Measured
+     * 2026-09-21: `nightmare-dit-lora-mode.txt` sat in Downloads, the app found
+     * it, and the backend never saw the variable. It is the same permission
+     * that makes the engine say `cannot register LoRA source` for a LoRA left
+     * there.
+     *
+     * ⚠ `Download/` is still read as a FALLBACK, because that is where the
+     * older `nightmare-spillfill.txt` note tells people to put one — it works
+     * when adb writes the file as the app's own uid, and costs nothing when it
+     * does not.
+     */
+    private fun readDiagnosticFile(context: Context, name: String): String? {
+        val places = listOf(
+            File(context.getExternalFilesDir(null), name),
+            File(
+                android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS,
+                ),
+                name,
+            ),
+        )
+        for (f in places) {
+            val v = runCatching {
+                f.takeIf { it.isFile }?.readText()?.trim()
+            }.getOrNull()
+            if (!v.isNullOrEmpty()) return v
+        }
+        return null
+    }
+
+    /**
+     * ⭐⭐ **DIAGNOSTIC: how a LoRA is applied**, from
+     * `Download/nightmare-dit-lora-mode.txt` — `1` merges into the weights at
+     * load, `2` keeps the branches and applies them per pass. Absent leaves the
+     * engine's own choice, which is what ships.
+     *
+     * ⚠ Same shape as [readSpillFillOverride] and [readDitBackendOverride].
+     */
+    private fun readDitLoraModeOverride(context: Context): String? =
+        readDiagnosticFile(context, "nightmare-dit-lora-mode.txt")
+            ?.takeIf { it.toIntOrNull() != null }
+
+    /**
      * ⭐ Where a textual-inversion embedding must live for the backend to
      * find it. `main.cpp` computes this itself as `parent_path().parent_path()`
      * of `--model_dir`, i.e. two directories above `modelsDir/<modelId>/` —
@@ -202,6 +303,23 @@ object BackendProcess {
      */
     fun embeddingsDir(context: Context): File =
         File(context.getExternalFilesDir(null), "embeddings")
+
+    /**
+     * ⭐⭐ Where a LoRA adapter has to live for the engine to load it.
+     *
+     * ⚠⚠⚠ **Inside the app's own storage, and that is not a preference.**
+     * The backend runs as this app's uid, and scoped storage does not let it
+     * open a file another uid owns in `Download/` — the engine says so by name:
+     * `cannot register LoRA source '/sdcard/Download/…'`. A LoRA a user picked
+     * has to be COPIED here before it can be named in a request
+     * (`docs/ROADMAP.md` §2f).
+     *
+     * ⚠ Beside the model directories rather than inside one: an adapter is not
+     * a checkpoint, and the same file is usable by every checkpoint of its
+     * architecture. ⚠ The leading underscore keeps it out of the way of
+     * `CustomModels.scan`, exactly as `_dit_shared` does.
+     */
+    fun lorasDir(context: Context): File = File(modelsDir(context), "_loras")
 
     sealed interface Start {
         data object Ok : Start
@@ -366,6 +484,9 @@ object BackendProcess {
                     // the defaults leaves the skel unable to resolve what it
                     // links against. Upstream's exact list.
                     if (dit) {
+                        // ⚠ Diagnostic only, and absent on every ordinary launch.
+                        readDitBackendOverride(context)?.let { put("NM_DIT_BACKEND", it) }
+                        readDitLoraModeOverride(context)?.let { put("NM_DIT_LORA_MODE", it) }
                         val dsp = listOf(
                             runtime.absolutePath, "/vendor/lib/rfsa/adsp", "/vendor/dsp/cdsp", "/dsp",
                         ).joinToString(";")

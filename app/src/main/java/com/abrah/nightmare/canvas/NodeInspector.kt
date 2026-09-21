@@ -895,47 +895,54 @@ internal fun NodeInspectorBody(
         // here and its width and height turned up as two raw sliders loose in
         // the knob list at the bottom of the sheet.
         //
-        // ⚠⚠ The shape is [ModelCatalog.DIT_SHAPES], NOT [ModelCatalog.ASPECTS],
-        // and the two must not be merged however alike they read. An aspect chip
-        // on SDXL crops a frozen 1024² canvas and changes no dimension; a shape
-        // here CHOOSES the width and height the engine renders. Same word, two
-        // mechanisms — which is why this calls [onSetResolution] (a size) and
-        // never [onSetAspect] (a crop).
+        // ⚠⚠ **A DiT size is not an ASPECT and the two must not be merged
+        // however alike they read.** An aspect chip on SDXL crops a frozen
+        // 1024² canvas and changes no dimension; these sliders CHOOSE the width
+        // and height the engine renders. Same subject, two mechanisms — which
+        // is why this calls [onSetResolution] (a size) and never [onSetAspect]
+        // (a crop).
+        //
+        // ⭐⭐⭐ **Two free sliders, upstream's control**
+        // (`local-dream/.../AdvancedSettingsDialog.kt`), the user's call
+        // 2026-09-21. ⚠⚠ They replaced a Shape chooser over a table of
+        // hand-picked pairs, and the table is what the report was about: at
+        // `4:3` it could offer only 1024x768 or 2048x1536, so 1280x960 — legal
+        // on this engine, legal upstream — was unreachable, and a person after
+        // an ordinary 4:3 picture was pushed to 2048x1536. A table of pairs
+        // cannot cover a 64-px grid; two sliders are the grid.
+        //
+        // ⚠ The table only existed because [ModelCatalog.DIT_STEP] was wrongly
+        // believed to be 256, where `4:3` and `3:2` really do collide. At 64
+        // they do not, and the reasoning the table rested on went with it.
         val ditSpec = com.abrah.nightmare.ModelCatalog.byId(node.params["model"].orEmpty())
             ?.takeIf { it.isDit && node.type in com.abrah.nightmare.IMAGE_SAMPLER_TYPES }
         val ditPanel: @Composable () -> Unit = ditPanel@{
             val spec = ditSpec ?: return@ditPanel
+            val widthW = type?.widgets?.firstOrNull { it.name == "width" } ?: return@ditPanel
+            val heightW = type?.widgets?.firstOrNull { it.name == "height" } ?: return@ditPanel
             val cur = com.abrah.nightmare.Res(
                 node.params["width"]?.toIntOrNull() ?: spec.native.width,
                 node.params["height"]?.toIntOrNull() ?: spec.native.height,
             )
-            val shape = com.abrah.nightmare.ModelCatalog.ditShapeOf(cur)
-            Chooser(
-                label = stringResource(R.string.shape),
-                // ⚠ Says the one thing a person cannot see: this is free here,
-                // where on SDXL the same-looking control costs nothing either but
-                // on SD 1.5 the size below it costs a reload.
-                hint = stringResource(R.string.hint_dit_shape),
-                options = com.abrah.nightmare.ModelCatalog.DIT_SHAPES.keys.toList(),
-                // ⚠ Empty, not a guess, when a saved flow names a pair no shape
-                // offers — [ditShapeOf] returns null and nothing is highlighted.
-                current = shape.orEmpty(),
-                onPick = { s ->
-                    com.abrah.nightmare.ModelCatalog.ditSizeFor(s, cur)?.let(onSetResolution)
-                },
+            // ⚠⚠ The value under the finger, held here until the finger lifts —
+            // see [SliderRow]'s `onCommit`. ⚠ Keyed on `cur` as well as the node,
+            // so it drops itself the moment the committed size lands (and when
+            // anything else moves it, such as dropping a photo in).
+            var draft by remember(nodeId, cur) { mutableStateOf<com.abrah.nightmare.Res?>(null) }
+            val shown = draft ?: cur
+            // ⚠ One commit for the pair, not one per slider: [onSetResolution]
+            // takes a [com.abrah.nightmare.Res] and a half-applied size is not a
+            // thing the graph should ever hold.
+            val commit = { draft?.let(onSetResolution); draft = null }
+            SliderRow(
+                widthW, shown.width.toString(),
+                onSet = { v -> v.toIntOrNull()?.let { draft = shown.copy(width = it) } },
+                onCommit = commit,
             )
-            // ⚠ The sizes of the CHOSEN shape, so the two controls can never
-            // disagree. With no shape matched the whole grid is offered, which
-            // is the only way back from a hand-written size.
-            val sizes = shape?.let { com.abrah.nightmare.ModelCatalog.DIT_SHAPES[it] }
-                ?: com.abrah.nightmare.ModelCatalog.DIT_SHAPES.values.flatten()
-            Chooser(
-                label = stringResource(R.string.resolution),
-                hint = null,
-                options = sizes.map { it.toString() },
-                current = cur.toString(),
-                onPick = { l -> com.abrah.nightmare.Res.fromLabel(l)?.let(onSetResolution) },
-                variesInLength = true,
+            SliderRow(
+                heightW, shown.height.toString(),
+                onSet = { v -> v.toIntOrNull()?.let { draft = shown.copy(height = it) } },
+                onCommit = commit,
             )
         }
         val sizePanel: @Composable () -> Unit = {
@@ -1334,6 +1341,8 @@ internal fun NodeInspectorBody(
         // ⚠ Which knob's batch popup is open, or null. Local: an unanswered
         // popup is not something to persist.
         var batching by remember(nodeId) { mutableStateOf<Widget?>(null) }
+        // ⚠ Whether the LoRA picker is open. Local for the same reason.
+        var pickingLoras by remember(nodeId) { mutableStateOf(false) }
         // ⚠ Null when not renaming. Keyed on the node so opening another
         // node's sheet cannot leave a half-typed name from the last one.
 
@@ -1497,6 +1506,30 @@ internal fun NodeInspectorBody(
         if (preview != null && seed != null && node.type == "core.output") SeedRow(seed)
 
         // ⭐ The popup for whichever knob's BAT icon was tapped.
+        // ⭐ The LoRA picker, opened from the knob's own row below.
+        //
+        // ⚠⚠ The installed list is read HERE, not in [com.abrah.nightmare.SdSampler]'s
+        // widget declaration — a `NodeType.widgets` getter is a plain property
+        // with no Context, which is why this param shipped as free text. A
+        // composable has one.
+        if (pickingLoras) {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            // ⚠ Re-read every time it opens: an import on the Settings tab
+            // happens while a graph is on the canvas, and a list cached at
+            // composition would not show the file that was just added.
+            val installed = remember(pickingLoras) {
+                com.abrah.nightmare.BackendProcess.lorasDir(ctx).listFiles { f ->
+                    f.isFile && f.extension.equals("safetensors", ignoreCase = true)
+                }.orEmpty().map { it.name to it.length() }.sortedBy { it.first.lowercase() }
+            }
+            LoraPicker(
+                installed = installed,
+                spec = node.params[com.abrah.nightmare.SdSampler.LORAS].orEmpty(),
+                onSet = { onSetParam(nodeId, com.abrah.nightmare.SdSampler.LORAS, it) },
+                onDismiss = { pickingLoras = false },
+            )
+        }
+
         batching?.let { w ->
             BatchDialog(
                 node = node,
@@ -1727,6 +1760,62 @@ internal fun NodeInspectorBody(
                 (w.name == "out_w" || w.name == "out_h") && conflict != null ->
                     "two consumers disagree — ${conflict.reason()}"
                 else -> w.locked
+            }
+            // ⭐⭐⭐ **The LoRA knob is a summary line that opens a picker**, not
+            // a text field. A LoRA is chosen from what is on the phone; typing
+            // its filename from memory is the one way to get it wrong, and a
+            // strength typed into a box has no bounds at all.
+            //
+            // ⚠ It reads its own summary from [com.abrah.nightmare.LoraSpec] — the
+            // same tokeniser the picker and Run use, so the line under the
+            // label cannot disagree with what will be applied.
+            if (w.name == com.abrah.nightmare.SdSampler.LORAS) {
+                val entries = com.abrah.nightmare.LoraSpec.parse(node.params[w.name])
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable(enabled = why == null) { pickingLoras = true }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (why != null) "${w.name.knobLabel}  (locked)" else w.name.knobLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            // ⚠⚠⚠ The REASON beats everything when the knob is
+                            // locked — on Z-Image this control does nothing, and
+                            // a row that still reads "adapters applied on top of
+                            // this checkpoint" over a dead button is the lie the
+                            // lock exists to stop.
+                            // ⚠⚠ Otherwise the HINT when nothing is picked, not
+                            // the word "None". The golden for this row showed it
+                            // bare, and a bare row is where the old text field's
+                            // one useful sentence went. The button beside it
+                            // reads "Choose" rather than "Change", so the empty
+                            // STATE is already on screen twice over.
+                            why ?: if (entries.isEmpty()) w.hint ?: stringResource(R.string.btn_none)
+                            else com.abrah.nightmare.LoraSpec.summary(entries),
+                            style = LogTextStyle,
+                            // ⚠ Not error red: a LOCKED knob is information, not a failure (`docs/UI.md` §8.5).
+                            color = if (why != null || entries.isEmpty())
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    if (why == null) {
+                        TextButton(
+                            onClick = { pickingLoras = true },
+                        ) {
+                            Text(
+                                stringResource(
+                                    if (entries.isEmpty()) R.string.btn_choose else R.string.btn_change,
+                                ),
+                            )
+                        }
+                    }
+                }
+                continue
             }
             // ⭐⭐⭐ **A `bool` is a CHECKBOX.** It had no branch at all, so
             // every one in the app fell through to the text field at the bottom
@@ -2200,7 +2289,23 @@ private fun ChoiceDropdown(
  * and into every cache key derived from it.
  */
 @Composable
-private fun SliderRow(widget: Widget, current: String, onSet: (String) -> Unit) {
+private fun SliderRow(
+    widget: Widget,
+    current: String,
+    onSet: (String) -> Unit,
+    /**
+     * ⭐⭐ Called once when the finger LIFTS, for a knob whose [onSet] is too
+     * expensive to run per frame.
+     *
+     * ⚠⚠ Null for every ordinary knob, and that is deliberate: writing a
+     * param on each change is what makes the preview and the node title follow
+     * the thumb. The DiT size sliders are the exception — a size write
+     * invalidates every derived picture on the canvas and prints a line in the
+     * run log ([HarnessViewModel.setNodeResolution]), so per-frame it would be
+     * sixty invalidations and sixty log lines for one drag.
+     */
+    onCommit: (() -> Unit)? = null,
+) {
     val min = widget.min!!.toFloat()
     val max = widget.max!!.toFloat()
     val isInt = widget.type == "int"
@@ -2266,6 +2371,7 @@ private fun SliderRow(widget: Widget, current: String, onSet: (String) -> Unit) 
             // instrument. Rounding the written value gives the same snap with
             // none of that.
             steps = 0,
+            onValueChangeFinished = onCommit ?: {},
             modifier = Modifier.fillMaxWidth(),
         )
         widget.hint?.let {

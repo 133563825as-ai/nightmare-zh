@@ -1092,6 +1092,10 @@ val String.nodeLabelText: String
 // names live in [KNOB_LABEL_RES] and are resolved at read time instead.
 private val KNOB_OVERRIDES = mapOf(
     "cfg" to "CFG",
+    // ⚠ The capitalisation everyone who trains one uses; "Loras" reads as a typo.
+    "loras" to "LoRAs",
+    "out_w" to "Output width",
+    "out_h" to "Output height",
     "w" to "Width",
     "h" to "Height",
     "uri" to "Picture",
@@ -1127,6 +1131,10 @@ private val KNOB_LABEL_RES: Map<String, Int> = mapOf(
     // the upscale node actually declares, and it is a CONST — a scan for
     // `Widget("literal")` misses it, which is why this card read "Upscaler".
     "upscaler" to R.string.knob_upscaler,
+    // ⚠ `loras`, the param key `Fused.ditWidgets` declares. 1.6.0 gave it its
+    // own control (a picker) and its own label here, so the merged
+    // `KNOB_OVERRIDES` entry "loras" → "LoRAs" is only the English fallback.
+    "loras" to R.string.knob_loras,
     "uri" to R.string.knob_uri,
     "stitch" to R.string.knob_stitch,
     "out_w" to R.string.port_out_w,

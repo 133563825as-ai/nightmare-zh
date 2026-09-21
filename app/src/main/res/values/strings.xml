@@ -137,6 +137,8 @@
     <string name="tools">Tools</string>
     <string name="tools_note">Small helpers that run on the phone\'s CPU. Wire one into a flow to use it.</string>
     <string name="segmenter_about">Tap an object in an Inpaint mask to select it. Wire a Segment model node into Inpaint.</string>
+    <string name="loras_title">LoRAs</string>
+    <string name="loras_body">A style or character as a small adapter file, applied on top of a checkpoint. FLUX.2 and Z‑Image only — pick one on a sampler node’s LoRAs knob.</string>
     <string name="embeddings_title">Embeddings</string>
     <string name="embeddings_body">A trained concept as a file, not a checkpoint — a .safetensors from Civitai or similar. Name it in a prompt to use it.</string>
     <!-- Download source (mirror). Added 2026-09-20: huggingface.co is
@@ -445,7 +447,7 @@
     <string name="family_note_flux2">About 6.7 GB. 8 Elite or newer only. Any size from 512 to 2048. Use Wi-Fi.</string>
     <string name="family_note_zimage">About 8.8 GB. 8 Elite or newer only. Still maturing: it crashes on some 8 Elite phones. Use Wi-Fi.</string>
     <string name="family_note_sdxl">About 3.5 GB each, and ~7.5 GB free while it unpacks. Use Wi-Fi.</string>
-    <string name="import_dit_body">One .safetensors — a checkpoint from CivitAI or Hugging Face, used as it is. No conversion. It shares this family\'s text encoder and VAE, so download the built-in model first.</string>
+    <string name="import_dit_body">One .safetensors — a checkpoint from CivitAI or Hugging Face, used as it is. No conversion. It borrows a text encoder and this family\'s VAE: nothing to fetch if you have this family\'s model, 336 MB if you have the other one, 2.6 GB if you have neither.</string>
     <string name="import_zip_body">A zip of QNN model files, converted on a PC. SD 1.5, SDXL or Anima — it works out which.</string>
     <string name="model_ready">%1$s is ready</string>
     <string name="flow_needs_model">This flow needs a model</string>
@@ -593,4 +595,35 @@
     <string name="family_anima">Anima</string>
     <string name="family_flux2">FLUX.2</string>
     <string name="family_zimage">Z-Image</string>
+
+    <!-- ⚠⚠ Added 2026-09-21 with upstream v1.6.0: the crash report, the LoRA
+         picker, the LoRA hints and the DiT size sliders. Every key here has a
+         counterpart in values-zh/strings.xml, and they are kept in step by
+         hand, which is why they sit together in one block. -->
+    <string name="btn_ok">OK</string>
+    <string name="btn_done">Done</string>
+    <string name="btn_choose">Choose</string>
+    <string name="btn_change">Change</string>
+    <string name="btn_none">None</string>
+    <string name="crash_notice_title">Last time, something went wrong</string>
+    <string name="crash_notice_details">Details</string>
+    <string name="crash_notice_doing">It happened while %1$s.</string>
+    <string name="crash_what_crash">the app crashed</string>
+    <string name="crash_what_crash_native">the app crashed in native code</string>
+    <string name="crash_what_anr">the app stopped responding</string>
+    <string name="crash_what_low_memory">Android closed the app to free memory</string>
+    <string name="crash_what_signaled">Android stopped the app</string>
+    <string name="crash_what_unknown">the app closed unexpectedly</string>
+    <string name="crash_headline_detail">%1$s — %2$s</string>
+    <string name="lora_picker_none">No LoRAs on this phone yet. Import a .safetensors on the Settings tab and it will appear here.</string>
+    <string name="lora_missing">not on this phone — import it or untick it</string>
+    <string name="lora_delete_title">Delete %1$s?</string>
+    <string name="lora_delete_body">Any node that names it refuses to run until you import it again or untick it.</string>
+    <string name="lora_hint">adapters applied on top of this checkpoint — import them on the Settings tab</string>
+    <string name="lora_locked_zimage">not supported on Z-Image yet — the engine binds no tensors from a Z-Image adapter</string>
+    <string name="lora_no_context">LoRAs need an Android context on this host</string>
+    <string name="dit_size_hint">any size in %1$d-pixel steps, either edge — no reload, and a bigger picture takes proportionally longer</string>
+    <string name="err_dit_family_in_name">a .safetensors needs its family in the name — %1$s</string>
+    <string name="phase_downloading_shared">downloading the shared parts</string>
+    <string name="knob_loras">LoRAs</string>
 </resources>

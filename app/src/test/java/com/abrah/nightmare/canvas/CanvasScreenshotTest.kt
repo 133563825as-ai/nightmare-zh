@@ -661,16 +661,51 @@ class CanvasScreenshotTest {
      * raw sliders at the bottom of the knob list.
      *
      * ⚠⚠ This golden pins all three halves of the fix at once: the checkpoint
-     * field is present, Shape and Resolution are drawn at the TOP in the slot
-     * every other family's size control uses, and `width`/`height` do NOT also
-     * appear as number fields below — the same duplicate the SD nodes were
-     * reported for on 2026-09-18.
+     * field is present, the size is drawn at the TOP in the slot every other
+     * family's size control uses, and `width`/`height` do NOT also appear
+     * below — the same duplicate the SD nodes were reported for on 2026-09-18.
      *
-     * ⚠ Seven shapes is past `CHIP_LIMIT` (4), so Shape draws as a DROPDOWN —
-     * which is exactly what SDXL's seven-entry `aspect` chooser does, and is the
-     * point: both families now reach the same control through the same
-     * [Chooser] rule rather than through two hand-rolled layouts.
+     * ⭐⭐ **The size is two free SLIDERS since 2026-09-21** — upstream's
+     * control, on upstream's 64-px grid. It was a Shape dropdown over a table
+     * of hand-picked pairs, and the table could not reach 1280x960: see
+     * [ModelCatalog.ditFit] and `docs/MODELS.md`. ⚠ What the golden is still
+     * for is unchanged — the size control lives in the SAME slot as every
+     * other family's, whatever widget it is made of.
      */
+    /**
+     * ⭐⭐ The LoRA picker, with all three states it has: one applied at a
+     * strength, one installed and off, and one a workflow NAMES that this phone
+     * does not have.
+     *
+     * ⚠⚠ The third row is the one worth a golden. A missing LoRA is easy to
+     * drop silently, and a graph that then refuses at Run would name a file the
+     * picker swore was not in it — so it is drawn, in the error colour, with
+     * what to do about it.
+     *
+     * ⚠ [LoraPickerContent] rather than [LoraPicker]: an `AlertDialog` is a
+     * window of its own and Roborazzi cannot reach inside one. Same split, for
+     * the same reason, as `NodePaletteContent`.
+     */
+    @Test
+    fun theLoraPickerShowsWhatIsThereAndWhatIsNot() = shoot("lora-picker") {
+        Surface {
+            LoraPickerContent(
+                installed = listOf(
+                    "anime-lines.safetensors" to 88L * 1024 * 1024,
+                    "film-grain.safetensors" to 42L * 1024 * 1024,
+                ),
+                spec = "anime-lines.safetensors@0.8, gone.safetensors@1.2",
+                onSet = {},
+            )
+        }
+    }
+
+    /** ⚠ A fresh phone. The empty state has to say where LoRAs come from. */
+    @Test
+    fun theLoraPickerSaysWhereToGetThemWhenThereAreNone() = shoot("lora-picker-empty") {
+        Surface { LoraPickerContent(installed = emptyList(), spec = "", onSet = {}) }
+    }
+
     @Test
     fun theFluxNodeReadsLikeAnSdOne() = shoot("inspector-dit-size") {
         Surface(Modifier.fillMaxSize()) {

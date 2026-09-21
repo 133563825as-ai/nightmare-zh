@@ -256,6 +256,21 @@ class SdSampler(
          * ⭐ The reference region's params. Named apart from `x`/`y`/`w`/`h`
          * so a node can frame its base and crop its reference independently.
          */
+        /**
+         * ⭐⭐ The LoRA adapters this node renders with: a comma-separated list
+         * of `file.safetensors@strength`, strength optional and 1.0 by default.
+         *
+         * ⚠⚠ A NAME, never a path. The file is resolved inside
+         * [BackendProcess.lorasDir], because that is the only directory the
+         * backend can open one from (`docs/ROADMAP.md` §2f) — a saved workflow
+         * carrying an absolute path would also break the moment it moved to
+         * another phone.
+         *
+         * ⚠ DiT only. A QNN pipeline has nowhere to put a LoRA, so the field is
+         * not offered on those families.
+         */
+        const val LORAS = "loras"
+
         const val REF_X = "ref_x"
         const val REF_Y = "ref_y"
         const val REF_W = "ref_w"
@@ -622,11 +637,12 @@ class SdSampler(
      * chip, no mask — and a SIZE that is a request field, not a launch one.
      * ⚠ Not [Widget.contextKey]: moving them never relaunches the backend
      * ([backendContextKey] keys a DiT model on its native size).
-     * ⚠⚠ They are also not drawn as sliders any more. The inspector's size
-     * panel owns them for every family now (`NodeInspector`'s `ditPanel`,
-     * [ModelCatalog.DIT_SHAPES]) and `hiddenKnob` keeps them out of the knob
-     * list, so these declarations exist to carry the DEFAULT and the legal
-     * range — which is what a saved workflow and `applyDefaults` read.
+     * ⚠⚠ They ARE sliders, but not in the knob list: the inspector's size
+     * panel draws them in the slot every other family's size control occupies
+     * (`NodeInspector`'s `ditPanel`) and `hiddenKnob` keeps them from being
+     * drawn a second time at the bottom of the sheet. So these declarations
+     * carry the DEFAULT, the legal range and the grid — which is what the
+     * panel, a saved workflow and `applyDefaults` all read.
      */
     private fun ditWidgets(): List<Widget> = baseWidgets()
         .filterNot { it.name in setOf("scheduler", "aspect", "width", "height", "cfg") } + listOf(
@@ -643,15 +659,83 @@ class SdSampler(
                     "starts being read, and each step costs about twice as long",
             ),
         ),
+        // ⭐ The hint goes on WIDTH alone, not on both: it describes the pair,
+        // and saying it twice under two adjacent sliders is noise.
         Widget(
             "width", "int", ModelCatalog.DIT_RES.width.toString(),
             ModelCatalog.DIT_MIN.toDouble(), ModelCatalog.DIT_MAX.toDouble(), step = ModelCatalog.DIT_STEP,
+            hint = ditSizeHint,
         ),
         Widget(
             "height", "int", ModelCatalog.DIT_RES.height.toString(),
             ModelCatalog.DIT_MIN.toDouble(), ModelCatalog.DIT_MAX.toDouble(), step = ModelCatalog.DIT_STEP,
         ),
+        // ⚠⚠ **A `string` the inspector does NOT draw as a text field.** A
+        // `NodeType.widgets` getter is a plain property with no Context, so it
+        // cannot list what is installed — which is why this shipped as free
+        // text in 1.5.557. The CONTROL is where the Context is: the inspector
+        // gives [LORAS] its own branch and opens
+        // [com.abrah.nightmare.canvas.LoraPicker]. The format is
+        // [com.abrah.nightmare.LoraSpec]'s, and a workflow file still carries
+        // exactly this string.
+        Widget(
+            LORAS, "string", "",
+            hint = NmApp.str(
+                R.string.lora_hint,
+                "adapters applied on top of this checkpoint — import them on " +
+                    "the Settings tab",
+            ),
+            // ⚠⚠⚠ **FLUX.2 only, and LOCKED on Z-Image rather than hidden.**
+            // Measured on device 2026-09-22: a Z-Image adapter is registered by
+            // the engine and binds ZERO tensors — no `loading N/M tensors` line
+            // at all, where FLUX prints `160/160` — and the render comes out
+            // byte-identical whatever is picked. The naming is NOT the cause;
+            // upstream's `convert_diffusers_dit_to_original_lumina2` already
+            // maps `to_q`/`to_k`/`to_v` onto the fused `qkv`. Why it does not
+            // bind is open (`docs/ROADMAP.md` §2g).
+            //
+            // ⚠⚠ The knob is DECLARED by [ditWidgets], which both DiT
+            // families share, so without this it renders on a Z-Image sampler,
+            // accepts a pick and silently does nothing — the exact shape of
+            // the sampler's old dead `prompt` field (`docs/ARCHITECTURE.md`
+            // §3). ⚠ Locked rather than removed, following `karras` on LCM: a
+            // control that vanishes reads as a bug, a greyed one that names the
+            // family says the support does not exist yet.
+            locked = if (family == Family.ZIMAGE)
+                NmApp.str(
+                    R.string.lora_locked_zimage,
+                    "not supported on Z-Image yet — the engine binds no tensors " +
+                        "from a Z-Image adapter",
+                )
+            else null,
+        ),
     )
+
+    /**
+     * ⚠⚠ **The DiT size hint, hoisted into a `lazy` — and the reason is the
+     * draw path.**
+     *
+     * ⚠ It carries `ModelCatalog.DIT_STEP` as a format argument, and [NmApp.str]
+     * deliberately does NOT cache formatted calls: that rule is about the
+     * un-argumented hints, which is what the ~350 resource ids on hot paths
+     * are. This one is read from `NodeType.widgets`, which `GraphCanvas` reads
+     * on the DRAW path once per node per frame ⇒ a formatted resource lookup
+     * per frame is exactly the panning jank the cache in [NmApp] was added to
+     * remove. A `lazy` computes it once and every later read is a field read.
+     *
+     * ⚠⚠ **`by lazy`, NOT a plain `val`.** A plain one runs during class init,
+     * which is before `Application.onCreate` ⇒ [NmApp.str] would hand back the
+     * English fallback and cache it for the whole process. That is the trap
+     * `Recipe.labelText` documents, and this file has paid for it once already.
+     */
+    private val ditSizeHint: String by lazy {
+        NmApp.str(
+            R.string.dit_size_hint,
+            "any size in %1\$d-pixel steps, either edge — no reload, and a bigger " +
+                "picture takes proportionally longer",
+            ModelCatalog.DIT_STEP,
+        )
+    }
 
     override fun contextKey(node: Node) = backendContextKey(node)
 
@@ -1117,6 +1201,54 @@ class SdSampler(
             )
     }
 
+    /**
+     * ⭐⭐ Turn the [LORAS] param into what `Ops.generate` sends: absolute
+     * paths inside [BackendProcess.lorasDir], each with a strength.
+     *
+     * ⚠⚠ **A missing file is refused here, not at Run.** The engine's answer
+     * to a path it cannot open is `cannot register LoRA source`, which it logs
+     * and then renders WITHOUT the adapter — a picture that looks like a
+     * success and is not the one that was asked for. Naming the file is the
+     * only way that failure becomes visible.
+     *
+     * ⚠ Blank, or every entry blank, is no LoRAs and costs nothing.
+     */
+    private fun lorasFor(ctx: NodeCtx, spec: String?): List<Pair<String, Double>> {
+        val text = spec?.trim().orEmpty()
+        if (text.isEmpty()) return emptyList()
+        // ⚠ A host with no Android context cannot resolve a LoRA at all; say so
+        // rather than rendering silently without one.
+        val android = ctx.android
+            ?: throw IllegalStateException(
+                NmApp.str(R.string.lora_no_context, "LoRAs need an Android context on this host"),
+            )
+        return parseLoras(BackendProcess.lorasDir(android), text)
+    }
+
+    /**
+     * ⭐ The [LORAS] string, resolved against [dir]. Separated from
+     * [lorasFor] so it can be tested without an Android context.
+     */
+    internal fun parseLoras(dir: java.io.File, spec: String?): List<Pair<String, Double>> {
+        // ⚠⚠ The SPLIT is [LoraSpec]'s, not this function's. The picker sheet
+        // reads and writes the same string, and two tokenisers agree only until
+        // one of them learns something. What stays here is the half the UI must
+        // NOT do: turning a name into a file, which can fail.
+        return LoraSpec.parse(spec).map { e ->
+            // ⚠ [LoraSpec.parse] has already reduced the name to a bare
+            // filename, so a `../` in a saved workflow cannot name a file
+            // outside `dir` — it becomes a name that is simply not installed,
+            // and is refused two lines down like any other.
+            val file = java.io.File(dir, e.name)
+            if (!file.isFile) {
+                throw IllegalStateException(
+                    "LoRA \"${e.name}\" is not in ${dir.name} — import it first",
+                )
+            }
+            file.absolutePath to e.strength
+        }
+    }
+
     private suspend fun runDit(
         ctx: NodeCtx,
         node: Node,
@@ -1128,7 +1260,7 @@ class SdSampler(
         h0: Int,
     ): Value {
         // ⚠ [ModelCatalog.ditSnap], not a local copy: the size control offers
-        // only grid values and this must agree with it (see DIT_SHAPES).
+        // only grid values and this must agree with it ([ModelCatalog.DIT_STEP]).
         val w = ModelCatalog.ditSnap(w0)
         val h = ModelCatalog.ditSnap(h0)
         val png = photo?.let {
@@ -1227,6 +1359,7 @@ class SdSampler(
             imagePng = png,
             denoise = p["denoise"]?.toDoubleOrNull() ?: defaultDenoise(family).toDouble(),
             referencePngs = listOfNotNull(referencePng),
+            loras = lorasFor(ctx, p[LORAS]),
             onProgress = ctx.onProgress,
         )
         val out = when (r) {

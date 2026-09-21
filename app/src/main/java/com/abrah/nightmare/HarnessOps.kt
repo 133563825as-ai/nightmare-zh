@@ -117,6 +117,26 @@ class HarnessOps(private val ctx: Context, private val sink: Sink) {
     }
 
     /**
+     * ⭐⭐ Forget every cached node result.
+     *
+     * ⚠⚠⚠ **A LoRA is keyed by NAME, and a file can be replaced under its
+     * name.** `cacheKey` hashes a node's params, and the `loras` param holds
+     * `style.safetensors`, not the bytes behind it — so importing a v2 over a
+     * v1 and pressing Run on a locked seed serves the v1 picture back, with
+     * nothing on screen saying so. Hashing the file instead would mean reading
+     * 90 MB on every key, for a case that happens on import; dropping the cache
+     * AT the import costs one re-render and is exact.
+     *
+     * ⚠ An imported EMBEDDING has a related but different problem and this
+     * does not fix it: the backend reads `embeddings/` at LAUNCH
+     * (`loadTextualInversions`), so a replaced embedding needs a relaunch, not
+     * a cache drop.
+     */
+    fun dropNodeCache() {
+        executor.cache.clear()
+    }
+
+    /**
      * Dispatch for an op named by intent, so the whole harness is drivable over
      * adb.
      *
@@ -165,6 +185,9 @@ class HarnessOps(private val ctx: Context, private val sink: Sink) {
             "aspect" -> aspectProbe(arg)
             "model_scan" -> scanModels()
             "model_import" -> importModels()
+            "dit_lora" -> ditLora(arg)
+            "lora_node" -> loraNode(arg)
+            "loras" -> listLoras()
             "latent_blend" -> latentBlend()
             "plugin_latent" -> pluginLatentGraph()
             // ⭐ The in-process NPU runner, on the phone, with nothing else
@@ -416,6 +439,237 @@ class HarnessOps(private val ctx: Context, private val sink: Sink) {
      * `--es arg refs` turns the reference leg on; without it only the two
      * safe legs run. Pictures land beside the base in files/dit_edit/.
      */
+    /**
+     * ⭐⭐⭐ **Does a LoRA actually reach the weights?** — the go/no-go for
+     * `docs/ROADMAP.md` §2f, and the first thing to run on an ABI 4 engine.
+     *
+     * Renders ONE fixed neutral prompt at one seed, twice: without the LoRA and
+     * with it. Three things then have to agree, and any one of them alone can
+     * lie:
+     *
+     *  1. the engine says how many tensors bound — grep the backend log for
+     *     "LoRA tensors have been applied" or "skipped";
+     *  2. the two pictures DIFFER. Same seed, same prompt, same steps, so a
+     *     byte-identical pair means nothing was applied however cheerful the
+     *     log was;
+     *  3. …and the second one still decodes to a picture rather than noise,
+     *     which is what a botched fp8 merge looks like (`docs/ROADMAP.md` §2e).
+     *
+     * ⚠ The prompt is deliberately dull and has nothing to do with whatever
+     * the LoRA was trained on. This measures whether ΔW reached the tensors,
+     * not what the adapter draws.
+     *
+     * ⚠⚠ `--es arg <path>`, with an optional strength after an `@`:
+     * `--es arg /sdcard/Download/foo.safetensors@0.8`. One string extra is all
+     * the dispatcher hands an op, so the multiplier rides on the path.
+     */
+    /** ⭐ What is in [BackendProcess.lorasDir] — the only place the engine can load one from. */
+    private fun listLoras() {
+        val dir = BackendProcess.lorasDir(ctx)
+        val files = dir.listFiles { f ->
+            f.isFile && f.extension.equals("safetensors", ignoreCase = true)
+        }.orEmpty().sortedBy { it.name.lowercase() }
+        say("loras in ${dir.absolutePath}")
+        if (files.isEmpty()) {
+            say("  none — an adapter left in Download/ cannot be read by the backend", bad = true)
+            return
+        }
+        for (f in files) say("  ${f.name.padEnd(44)} ${f.length() shr 20} MB")
+    }
+
+    private suspend fun ditLora(arg: String?) {
+        val spec = ModelCatalog.byId(SelectedModel.id)
+        if (spec?.isDit != true) {
+            return say("dit_lora needs a DiT model selected; ${SelectedModel.id} is not one", bad = true)
+        }
+        if (arg.isNullOrBlank()) {
+            return say("dit_lora needs --es arg <path to a .safetensors>[@strength]", bad = true)
+        }
+        // ⚠ rsplit: a path may contain an `@`, a strength never does.
+        val at = arg.lastIndexOf('@')
+        val mult = if (at > 0) arg.substring(at + 1).toDoubleOrNull() ?: 1.0 else 1.0
+        val path = if (at > 0 && arg.substring(at + 1).toDoubleOrNull() != null) arg.substring(0, at) else arg
+        val lora = java.io.File(path)
+        if (!lora.isFile) return say("dit_lora: no such file $path", bad = true)
+        say("lora: ${lora.name} (${lora.length() shr 20} MB) at x$mult")
+
+        val res = SelectedModel.res
+        if (!ensureBackend(ContextKey(ModelCatalog.backendTypeOf(spec.id), spec.id, res.width, res.height))) {
+            return say("dit_lora: no backend", bad = true)
+        }
+        val dir = java.io.File(ctx.getExternalFilesDir(null), "dit_lora").apply { mkdirs() }
+        // ⚠ Neutral on purpose — see the note above.
+        val prompt = "a red brick house beside a lake, clear sky, photorealistic"
+        val negative = "worst quality, low quality, blurry, lowres, watermark, text"
+
+        suspend fun leg(label: String, withLora: Boolean): ByteArray? {
+            val t0 = System.currentTimeMillis()
+            val r = Ops.generate(
+                prompt = prompt, negative = negative, steps = 4, cfg = 1.0, seed = 12345,
+                width = res.width, height = res.height, imagePng = null, denoise = 1.0,
+                loras = if (withLora) listOf(lora.absolutePath to mult) else emptyList(),
+            )
+            return when (r) {
+                is Ops.Result.Err -> {
+                    say("  $label FAILED http ${r.code} — ${r.body.take(200)}", bad = true); null
+                }
+                is Ops.Result.Ok -> {
+                    java.io.File(dir, "$label.png").writeBytes(r.value.png)
+                    say("  $label ok ${System.currentTimeMillis() - t0} ms, ${r.value.png.size} bytes")
+                    r.value.png
+                }
+            }
+        }
+
+        val plain = leg("without_lora", false) ?: return
+        val withL = leg("with_lora", true) ?: return
+
+        // ⚠⚠ The assertion that cannot be faked by a hopeful log line.
+        val same = plain.contentEquals(withL)
+        say(
+            if (same) "dit_lora: IDENTICAL output — the adapter did NOT reach the weights"
+            else "dit_lora: output CHANGED — the adapter reached the weights",
+            bad = same,
+        )
+        say("pictures in ${dir.absolutePath} — pull and LOOK, a changed picture can still be noise")
+        drainBackendLog()
+    }
+
+    /**
+     * ⭐⭐⭐ **The `loras` NODE PARAM, end to end through the executor.**
+     *
+     * ⚠⚠⚠ [ditLora] proves the TRANSPORT and nothing above it: it calls
+     * [Ops.generate] directly with a path it built itself, which is the one
+     * link in the chain that was never in doubt. Everything a user actually
+     * touches sits above that call — the picker writes a string, the param
+     * stores it, [SdSampler.parseLoras] resolves it against `_loras`, and
+     * [SdSampler.run] passes the result down. That half had unit tests and no
+     * device run, which is exactly the gap `CLAUDE.md` keeps naming: green
+     * across the suite and never once executed on the phone.
+     *
+     * So this op takes a NAME, puts it in a node's param, and runs a real
+     * three-node graph through [runWorkflow] twice.
+     *
+     * ⚠ Neutral prompt, fixed seed, and the verdict is a BYTE comparison —
+     * never the adapter's own subject matter.
+     */
+    private suspend fun loraNode(arg: String?) {
+        val spec = ModelCatalog.byId(SelectedModel.id)
+        if (spec?.isDit != true) {
+            return say("lora_node needs a DiT model selected; ${SelectedModel.id} is not one", bad = true)
+        }
+        val name = arg?.trim().orEmpty()
+        if (name.isEmpty()) {
+            return say("lora_node needs --es arg <name.safetensors[@strength]> from _loras", bad = true)
+        }
+        // ⚠ Parsed by the SAME tokeniser the picker writes with, so this op
+        // cannot pass a string the UI could not have produced.
+        val entries = com.abrah.nightmare.LoraSpec.parse(name)
+        val dir = BackendProcess.lorasDir(ctx)
+        for (e in entries) {
+            val f = java.io.File(dir, e.name)
+            say("  ${e.name} x${com.abrah.nightmare.LoraSpec.number(e.strength)} " +
+                if (f.isFile) "(${f.length() shr 20} MB)" else "— NOT INSTALLED")
+        }
+        val res = SelectedModel.res
+        // ⚠⚠ The backend, FIRST. [runWorkflow] relaunches for a key it does
+        // not hold, but it cannot start one from nothing — the first leg came
+        // back `GET /handles unreachable — backend down, nothing can run`. Same
+        // line [ditLora] has, and leaving it out is the whole reason this op
+        // exists: the path above [Ops.generate] is where the untested parts are.
+        // ⚠⚠ The model's NATIVE size, not [SelectedModel.res]. A DiT context
+        // key uses `native` because size is a REQUEST field there — one process
+        // serves every size ([backendContextKey]) — so launching at the picked
+        // resolution guarantees the executor immediately tears it down and
+        // relaunches: `serving …/512x512 but this graph needs …/1024x1024`,
+        // measured 2026-09-21, 2.3–5 s wasted on every run of this op.
+        val key = ContextKey(
+            ModelCatalog.backendTypeOf(spec.id), spec.id,
+            spec.native?.width ?: res.width, spec.native?.height ?: res.height,
+        )
+        val out = java.io.File(ctx.getExternalFilesDir(null), "lora_node").apply { mkdirs() }
+
+        suspend fun leg(label: String, loras: String): ByteArray? {
+            // ⚠⚠⚠ **Per LEG, not once for both.** [runWorkflow] ends in
+            // `releaseBackendIfTooBig`, and a checkpoint over the RAM gate
+            // (`docs/DEVICES.md` §6) is deliberately dropped after every render
+            // — Z-Image is 8.2 GB on an 11 GB phone. Ensuring once outside the
+            // legs made the second one report `GET /handles unreachable —
+            // backend down`, which reads exactly like a product bug and is not
+            // one: every Run path in [HarnessViewModel] calls `ensureBackendFor`
+            // itself for this reason. The op was the broken check.
+            if (!ensureBackend(key)) {
+                say("  $label: no backend", bad = true); return null
+            }
+            val sampler = Node(
+                "generate",
+                if (spec.family == Family.FLUX2) "flux2.sample" else "zimage.sample",
+                params = mapOf(
+                    "model" to spec.id,
+                    "width" to res.width.toString(),
+                    "height" to res.height.toString(),
+                    "steps" to "4",
+                    "cfg" to "1.0",
+                    "seed" to "12345",
+                    com.abrah.nightmare.SdSampler.LORAS to loras,
+                ),
+                inputs = mapOf("prompt" to com.abrah.nightmare.Source("prompt", "prompt")),
+            )
+            val wf = com.abrah.nightmare.canvas.Workflow(
+                Graph(
+                    listOf(
+                        Node(
+                            "prompt", "core.prompt",
+                            params = mapOf(
+                                "prompt" to "a red brick house beside a lake, clear sky, photorealistic",
+                                "negative" to "worst quality, low quality, blurry, lowres, watermark, text",
+                            ),
+                        ),
+                        sampler,
+                        Node("output", "core.output", inputs = mapOf("media" to com.abrah.nightmare.Source("generate", "image"))),
+                    )
+                ),
+                positions = emptyMap(),
+            )
+            val t0 = System.currentTimeMillis()
+            val r = runWorkflow(wf, onNode = { n ->
+                say("    ${n.id.padEnd(9)} ${n.outcome.name.lowercase().padEnd(7)} ${n.ms} ms  ${n.detail}",
+                    bad = n.outcome == Outcome.FAILED)
+            })
+            if (r.error != null) {
+                // ⭐⭐ A REFUSAL is a pass for the missing-file leg and a failure
+                // for the others, so it is printed rather than swallowed.
+                say("  $label refused — ${r.error}", bad = true)
+                return null
+            }
+            val img = r.outputs["output"] as? Value.Image
+                ?: (r.outputs["generate"] as? Value.Image)
+            if (img == null) {
+                say("  $label produced no image", bad = true); return null
+            }
+            // ⚠ `png`, not `get` — `get` hands back a Bitmap, and the verdict
+            // below is a byte comparison.
+            val png = images.png(img.id)
+            if (png == null) {
+                say("  $label image ${img.id} is not in the store", bad = true); return null
+            }
+            java.io.File(out, "$label.png").writeBytes(png)
+            say("  $label ok ${System.currentTimeMillis() - t0} ms, ${png.size} bytes")
+            return png
+        }
+
+        val plain = leg("without_lora", "") ?: return
+        val withL = leg("with_lora", name) ?: return
+        val same = plain.contentEquals(withL)
+        say(
+            if (same) "lora_node: IDENTICAL output — the param did NOT reach the engine"
+            else "lora_node: output CHANGED — the param reached the engine",
+            bad = same,
+        )
+        say("pictures in ${out.absolutePath}")
+        drainBackendLog()
+    }
+
     private suspend fun ditEdit(arg: String?) {
         val spec = ModelCatalog.byId(SelectedModel.id)
         if (spec?.isDit != true) {
@@ -860,9 +1114,14 @@ class HarnessOps(private val ctx: Context, private val sink: Sink) {
             CustomModels.importInbox(ctx)
         }
         if (lines.isEmpty()) {
-            // ⚠ Names the directory and the extension. The likely mistakes are
+            // ⚠ Names the directory and the extensions. The likely mistakes are
             // pushing to the models dir instead, and pushing an unzipped tree.
-            say("nothing to import — put a .zip in $inbox", bad = true)
+            // ⚠⚠ A DiT `.safetensors` carries its family in the name, because
+            // the file cannot say ([CustomModels.importInbox]).
+            say(
+                "nothing to import — put a .zip, or <name>.flux2/.zimage.safetensors, in $inbox",
+                bad = true,
+            )
             return
         }
         for (line in lines) say("  $line", bad = line.startsWith("FAIL"))
@@ -1020,6 +1279,13 @@ class HarnessOps(private val ctx: Context, private val sink: Sink) {
             }
             return
         }
+        // ⭐⭐ A DiT family serves a GRID, not a list of patch files — there is
+        // no file to report present or missing, and 625 rows is not a listing.
+        if (spec.isDit) {
+            say("${spec.label} renders ${spec.sizesServedText(ctx)}, on either edge")
+            say("  * ${SelectedModel.res}")
+            return
+        }
         val all = spec.availableResolutions(ctx)
         say("${spec.label}: ${all.size} resolution${if (all.size == 1) "" else "s"}")
         for (r in all) {
@@ -1039,9 +1305,8 @@ class HarnessOps(private val ctx: Context, private val sink: Sink) {
         val want = arg?.let { Res.fromLabel(it) }
         if (want == null) { say("res_use needs --es arg <WxH>, e.g. 768x512", bad = true); return }
         val spec = SelectedModel.spec
-        val ok = spec.availableResolutions(ctx)
-        if (want !in ok) {
-            say("${spec.label} cannot render $want — it serves ${ok.joinToString(", ")}", bad = true)
+        if (!spec.serves(ctx, want)) {
+            say("${spec.label} cannot render $want — it serves ${spec.sizesServedText(ctx)}", bad = true)
             return
         }
         val was = SelectedModel.res

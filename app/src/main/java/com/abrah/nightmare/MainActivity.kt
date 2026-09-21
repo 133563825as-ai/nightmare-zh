@@ -365,6 +365,11 @@ fun HarnessScreen(
                     embeddings = vm.embeddingRows,
                     onImportEmbedding = { embeddingPicker.launch(arrayOf("application/octet-stream", "*/*")) },
                     onDeleteEmbedding = vm::deleteEmbedding,
+                    // ⚠ List and delete only. The LoRA import button lives in
+                    // Settings, beside the embeddings one, for the reason the
+                    // user gave on 2026-09-20.
+                    loras = vm.loraRows,
+                    onDeleteLora = vm::deleteLora,
                 )
             },
             results = {
@@ -465,6 +470,13 @@ fun HarnessScreen(
     }
 
     if (vm.showCanvas) {
+        // ⭐⭐ How the app died last time, if it did — null on an ordinary
+        // launch, which is nearly every launch (`CrashReport`). Drawn on the
+        // FIRST screen, because the person who needs it is the one who just
+        // watched the app vanish.
+        vm.crashReport?.let { r ->
+            com.abrah.nightmare.ui.CrashNotice(r, onDismiss = vm::dismissCrashReport)
+        }
         vm.missingModel?.let { m -> MissingModelDialog(m, vm) }
         // ⭐⭐ Every picture the graph can make without the NPU, kept current
         // as the user works -- the chosen photo on `load_image`, the framed one
@@ -688,6 +700,12 @@ fun HarnessScreen(
     val settingsEmbeddingPicker = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) vm.importEmbedding(uri) }
+    // ⚠ Same reasoning again: `.safetensors` has no registered MIME type, so
+    // the filter has to be wide and the EXTENSION is what validates
+    // ([HarnessViewModel.importLora]).
+    val settingsLoraPicker = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri -> if (uri != null) vm.importLora(uri) }
     // ⭐ Whether this app is exempt from Doze/App Standby battery
     // optimisation — the belt-and-suspenders half of the background-kill fix
     // ([BackendKeepAliveService]'s foreground service is the main one). Not a
@@ -731,6 +749,11 @@ fun HarnessScreen(
             )
             appCtx.startActivity(intent)
         },
+        loras = vm.loraRows,
+        onImportLora = {
+            settingsLoraPicker.launch(arrayOf("application/octet-stream", "*/*"))
+        },
+        onDeleteLora = vm::deleteLora,
         embeddings = vm.embeddingRows,
         onImportEmbedding = {
             settingsEmbeddingPicker.launch(arrayOf("application/octet-stream", "*/*"))

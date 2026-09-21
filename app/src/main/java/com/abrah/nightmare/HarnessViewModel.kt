@@ -895,6 +895,20 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
     var modelError by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * ⭐⭐ **How the app died last time, if it did** — null on every ordinary
+     * launch, which is almost all of them ([CrashReport]).
+     *
+     * ⚠⚠ Read ONCE, here, rather than by the composable: `CrashReport.pending`
+     * consumes the breadcrumb and records that the exit has been reported, so
+     * calling it from a recomposition would show the report and then lose it.
+     */
+    var crashReport by mutableStateOf<CrashReport.Report?>(null)
+        private set
+
+    /** ⚠ The user has read it. [CrashReport] has already recorded that it was shown. */
+    fun dismissCrashReport() { crashReport = null }
+
     /** Non-null while an install is running; the id being fetched. */
     private var installing by mutableStateOf<String?>(null)
 
@@ -959,6 +973,10 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         // FAILURE ever reached a notification (PROGRESS.md). ⚠ Its own ~1 s
         // throttle: each update is a Binder call to system_server, and this
         // tick fires every 150 ms.
+        // ⭐ …and the breadcrumb, for the OTHER thing that gets reclaimed: a
+        // multi-gigabyte download or import ([CrashReport]). Idempotent, so the
+        // 150 ms tick costs one file write per job rather than one per tick.
+        CrashReport.mark(getApplication(), "downloading ${downloadLabel(id)}")
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastNoticeAt >= NOTICE_TICK_MS) {
             lastNoticeAt = now
@@ -968,6 +986,46 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
+
+    /**
+     * ⭐⭐⭐ **What this run is about to load, for the crash report to quote.**
+     *
+     * ⚠⚠⚠ Asked for 2026-09-21, after a Z-Image render at 2048² was killed
+     * and the dialog could only say *"it happened while rendering"*. For a
+     * memory kill that is the ONLY useful thing there is to say: Android writes
+     * no tombstone for an lmkd kill (`trace=null`, `description=null`, measured
+     * on this phone), so there is no log to show and never will be. What there
+     * is, is the checkpoint and the size — and the size is the knob
+     * (`docs/MODELS.md` §9).
+     *
+     * ⚠⚠ The node's OWN `width`/`height`, never [contextKeyResolutions]. A DiT
+     * sampler's size is not part of its context key — the key pins the model's
+     * native 1024² — so asking the key would have reported 1024x1024 for the
+     * 2048² render that actually died, which is worse than saying nothing.
+     *
+     * ⚠ Every step is wrapped: a breadcrumb is a diagnostic and must never be
+     * the reason a run fails to start.
+     */
+    private fun renderingBreadcrumb(): String = runCatching {
+        val samplers = canvas.workflow.graph.nodes.filter { it.type in SAMPLER_TYPES }
+        val what = samplers.mapNotNull { n ->
+            val model = n.params["model"]?.takeIf { it.isNotBlank() }
+                ?.let { ModelCatalog.byId(it)?.label ?: it }
+            val w = n.params["width"]?.toIntOrNull()
+            val h = n.params["height"]?.toIntOrNull()
+            when {
+                model != null && w != null && h != null -> "$model at ${w}x$h"
+                model != null -> model
+                else -> null
+            }
+        }.distinct()
+        when {
+            what.isEmpty() -> "rendering"
+            // ⚠ A multi-checkpoint graph names them all: the executor schedules
+            // both, and which one was resident when it died is the question.
+            else -> "rendering ${what.joinToString(" and ")}"
+        }
+    }.getOrDefault("rendering")
 
     private var lastNoticeAt = 0L
 
@@ -1004,6 +1062,25 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun refreshModels() {
         val ctx = getApplication<Application>()
+        // ⭐⭐⭐ **The shade's backstop.** An ONGOING row with nothing
+        // installing is a row nobody will ever end — and the user cannot swipe
+        // it away, because `setOngoing(true)` forbids it.
+        //
+        // ⚠⚠ Here because every path that installs or imports anything already
+        // calls this on its way out, success or failure, so it is the one place
+        // that covers all of them AND the next one somebody adds. The bug it
+        // ends: both import paths posted progress and reported no outcome, so a
+        // custom Z-Image import pinned "importing" in the shade for good
+        // ([DownloadNotice.live]). Reported from the phone 2026-09-21.
+        //
+        // ⚠ Not a substitute for reporting the outcome — `downloadSucceeded`
+        // and `downloadFailed` say what HAPPENED, and this only guarantees that
+        // nothing is left spinning when they are forgotten.
+        if (installing == null && DownloadNotice.live) DownloadNotice.clear(ctx)
+        // ⚠ …and the breadcrumb, for the same reason and in the same place: an
+        // install that ended left one behind on every path that did not go
+        // through `run`'s finally ([CrashReport]).
+        if (installing == null && !busy) CrashReport.clear(ctx)
         // ⚠ The upscalers ride along: this is the app's "re-read the disk"
         // entry point and a second one would be a second thing to forget.
         refreshUpscalers()
@@ -1011,6 +1088,11 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         ModelCatalog.refreshInstalled(ctx)
         refreshSegmenter()
         refreshEmbeddings()
+        // ⚠⚠ …and the LoRAs. It was missed when they landed, which is exactly
+        // what the comment above warns about: the list stayed empty until an
+        // import happened to refresh it, so a file already in `_loras` was
+        // invisible to both the Models tab and the node's picker.
+        refreshLoras()
         // ⚠ …and the video models, for the same reason. ⚠⚠ `probeVideoSupport`
         // is NOT called here: it starts the QNN backend, which is seconds, and
         // this runs every time the library opens. The tab asks for it itself.
@@ -1101,11 +1183,21 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                     installing = null
                     installProgress = null
                     if (missing.isEmpty()) {
+                        // ⚠⚠ The shade, not just the screen — see [DownloadNotice.live].
+                        downloadSucceeded(spec.label)
                         selectModel(spec)
                     } else {
                         modelError = "${spec.label} imported but is incomplete: " +
                             "missing ${missing.joinToString()}"
+                        downloadFailed(spec.label, modelError!!)
                     }
+                    refreshModels()
+                }
+            } catch (e: ModelInstaller.Cancelled) {
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    installing = null
+                    installProgress = null
+                    downloadCancelled()
                     refreshModels()
                 }
             } catch (e: Exception) {
@@ -1113,6 +1205,7 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                     installing = null
                     installProgress = null
                     modelError = "import failed: ${e.message}"
+                    downloadFailed(downloadLabel(name), modelError!!)
                     refreshModels()
                 }
             }
@@ -1150,9 +1243,22 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     installing = null
                     installProgress = null
-                    if (missing.isEmpty()) selectModel(spec)
-                    else modelError = "${spec.label} imported but is incomplete: " +
-                        "missing ${missing.joinToString()}"
+                    if (missing.isEmpty()) {
+                        // ⚠⚠ The shade, not just the screen — see [DownloadNotice.live].
+                        downloadSucceeded(spec.label)
+                        selectModel(spec)
+                    } else {
+                        modelError = "${spec.label} imported but is incomplete: " +
+                            "missing ${missing.joinToString()}"
+                        downloadFailed(spec.label, modelError!!)
+                    }
+                    refreshModels()
+                }
+            } catch (e: ModelInstaller.Cancelled) {
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    installing = null
+                    installProgress = null
+                    downloadCancelled()
                     refreshModels()
                 }
             } catch (e: Exception) {
@@ -1160,6 +1266,7 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                     installing = null
                     installProgress = null
                     modelError = "import failed: ${e.message}"
+                    downloadFailed(downloadLabel(name), modelError!!)
                     refreshModels()
                 }
             }
@@ -1794,6 +1901,68 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
             .sortedBy { it.name.lowercase() }
     }
 
+    /**
+     * ⭐⭐ The LoRA adapters on this device. DiT families only — a QNN
+     * pipeline has nowhere to put one (`docs/ROADMAP.md` §2f).
+     */
+    var loraRows by mutableStateOf<List<com.abrah.nightmare.ui.EmbeddingRow>>(emptyList())
+        private set
+
+    fun refreshLoras() {
+        loraRows = BackendProcess.lorasDir(getApplication()).listFiles { f ->
+            f.isFile && f.extension.equals("safetensors", ignoreCase = true)
+        }.orEmpty()
+            .map { com.abrah.nightmare.ui.EmbeddingRow(it.name, it.length()) }
+            .sortedBy { it.name.lowercase() }
+    }
+
+    /**
+     * ⭐⭐ Copy a picked adapter into [BackendProcess.lorasDir].
+     *
+     * ⚠⚠ The COPY is the point, not tidiness: the engine cannot open a file
+     * left in `Download/` at all ("cannot register LoRA source"), because the
+     * backend runs as this app's uid and scoped storage does not reach another
+     * app's file there.
+     *
+     * ⚠ Same validation as [importEmbedding], for the same reason — refuse a
+     * file whose name does not end `.safetensors` rather than renaming it, and
+     * take `File(displayName).name` so a provider's untrusted DISPLAY_NAME
+     * cannot carry `../` out of the directory.
+     */
+    fun importLora(uri: android.net.Uri) {
+        val ctx = getApplication<Application>()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val result = runCatching {
+                val displayName = uriDisplayName(uri).orEmpty()
+                require(displayName.endsWith(".safetensors", ignoreCase = true)) {
+                    "only .safetensors files are supported"
+                }
+                val dir = BackendProcess.lorasDir(ctx).apply { mkdirs() }
+                val safeName = java.io.File(displayName).name
+                    .ifBlank { "lora_${System.currentTimeMillis()}.safetensors" }
+                val target = java.io.File(dir, safeName)
+                ctx.contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { input.copyTo(it) }
+                } ?: throw java.io.IOException("could not read that file")
+                safeName
+            }
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                result.fold(
+                    onSuccess = { name ->
+                        say("imported LoRA $name")
+                        refreshLoras()
+                        // ⚠⚠ A LoRA is cached by NAME — see [HarnessOps.dropNodeCache].
+                        ops.dropNodeCache()
+                    },
+                    onFailure = { e ->
+                        modelError = "LoRA import failed: ${e.message}"
+                        say("LoRA import failed — ${e.message}", bad = true)
+                    },
+                )
+            }
+        }
+    }
+
     fun importEmbedding(uri: android.net.Uri) {
         val ctx = getApplication<Application>()
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -1839,6 +2008,25 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    /**
+     * ⚠ Stripped to its last segment before it reaches [java.io.File], the
+     * same reason [deleteEmbedding] does it — a name that came back from a UI
+     * row is still a name this function did not produce.
+     *
+     * ⚠⚠ No "is a graph using it" guard, and deliberately: the `loras` param
+     * holds NAMES, and a node naming a file that is gone refuses at Run by that
+     * name ([SdSampler.parseLoras]). That is a better failure than a delete
+     * refused on behalf of a workflow the user may not have open.
+     */
+    fun deleteLora(name: String) {
+        val f = java.io.File(BackendProcess.lorasDir(getApplication()), java.io.File(name).name)
+        if (f.delete()) say("deleted LoRA $name")
+        refreshLoras()
+        // ⚠ …and on the way out too: a node still naming it must now REFUSE,
+        // not serve the picture it made while the file was there.
+        ops.dropNodeCache()
     }
 
     fun deleteEmbedding(name: String) {
@@ -2095,10 +2283,12 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         val w = res.width.toString()
         val h = res.height.toString()
         if (node.params["width"] == w && node.params["height"] == h) return
-        val ok = SelectedModel.resolutionsOf(ctx, spec)
-        if (res !in ok) {
+        // ⚠⚠ [ModelSpec.serves], not `res in resolutionsOf(...)`. A DiT
+        // family answers with a GRID rather than a list, and the list idiom
+        // refused every legal size but its native one.
+        if (!spec.serves(ctx, res)) {
             say(
-                "${spec.label} cannot render $res — it serves ${ok.joinToString(", ")}",
+                "${spec.label} cannot render $res — it serves ${spec.sizesServedText(ctx)}",
                 bad = true,
             )
             return
@@ -2195,7 +2385,7 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         // ⚠ Read against the graph's model, not the selected one -- on a model
         // switch the sizes that are legal change with it.
         val resMoved = res != null && res != SelectedModel.res &&
-            res in (spec ?: SelectedModel.spec).availableResolutions(ctx)
+            (spec ?: SelectedModel.spec).serves(ctx, res)
         if (!modelMoved && !resMoved) return
 
         if (modelMoved) {
@@ -2499,6 +2689,11 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
      * are equally far from 1:1. ⚠ SD 1.5 picks among the sizes ITS model serves;
      * a fixed-canvas family picks an aspect, written on THIS node only. ⚠ A tie
      * keeps the size the node already has.
+     *
+     * ⭐⭐ **A DiT family does not pick at all — it COMPUTES**
+     * ([ModelCatalog.ditFit]). Its size is a request field on a 64-px grid, so
+     * "closest match" is within half a step of exact and the log-ratio search
+     * above has nothing to search.
      */
     private fun autoFraming(node: Node, photo: android.graphics.Bitmap): Map<String, String> =
         autoFraming(node, photo.width, photo.height)
@@ -2514,6 +2709,24 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                 { r -> if (r == node.params["aspect"]) 0 else 1 },
             ))
             out["aspect"] = best
+        } else if (spec != null && spec.isDit) {
+            // ⭐⭐⭐ **Computed, not picked from a list** — a DiT model renders
+            // any pair on its 64-px grid, so the photo's own ratio is reachable
+            // to within a grid step and there is no "closest match" to settle
+            // for. Reported 2026-09-21: a 4:3 photo landed on 1024x768 or
+            // 2048x1536 because those were the only 4:3 entries a table held,
+            // and 1280x960 — legal on this engine and on upstream — could not be
+            // reached at all.
+            //
+            // ⚠ Area held at what the node already renders, so dropping a photo
+            // changes the SHAPE and not the render time.
+            val cur = Res(
+                node.params["width"]?.toIntOrNull() ?: spec.native.width,
+                node.params["height"]?.toIntOrNull() ?: spec.native.height,
+            )
+            val best = ModelCatalog.ditFit(photoAspect, cur)
+            out["width"] = best.width.toString()
+            out["height"] = best.height.toString()
         } else if (spec != null) {
             val cur = Res(node.params["width"]?.toIntOrNull() ?: 0, node.params["height"]?.toIntOrNull() ?: 0)
             SelectedModel.resolutionsOf(getApplication(), spec).minWithOrNull(compareBy(
@@ -4905,14 +5118,32 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
      * ⚠ They had two: a sweep said "see Settings > Diagnostics" and never said
      * "no model installed", while Run said "see the harness log" (a screen the
      * user reaches only through Settings). The design review, 2026-09-15.
+     *
+     * ⚠⚠⚠ **And "see Settings > Diagnostics" pointed at a screen that was
+     * DELETED on 2026-09-19**, three days before a user followed it. Reported
+     * 2026-09-21 while importing a community FLUX checkpoint. It is the doc
+     * rule applied to UI copy — *a superseded claim is worse than no claim* —
+     * and the fix is not a better pointer: the backend had already said exactly
+     * what was wrong, and nothing showed it.
+     *
+     * ⇒ **Say the reason here** ([BackendProcess.failureReason]). The chip is
+     * the only surface a person sees when a run refuses, so the one line that
+     * explains it belongs in the chip, not behind a navigation path.
      */
-    private fun backendRefusal(namesNoKey: Boolean): String =
+    private fun backendRefusal(namesNoKey: Boolean): String {
         if (!namesNoKey &&
-            ModelCatalog.byId(SelectedModel.id)?.installed(getApplication()) != true) {
-            "no model installed — open Models and download one"
-        } else {
-            "the backend would not start — see Settings > Diagnostics"
+            ModelCatalog.byId(SelectedModel.id)?.installed(getApplication()) != true
+        ) {
+            return "no model installed — open Models and download one"
         }
+        // ⚠ The backend's own words, trimmed to the root cause. A checkpoint the
+        // engine cannot load says so by name ("parsing ComfyUI quantization
+        // metadata tensor failed"), which is the difference between "try another
+        // file" and "this app is broken".
+        val why = BackendProcess.failureReason()
+        return if (why != null) "the backend would not start — $why"
+        else "the backend would not start"
+    }
 
     /**
      * ⭐⭐ A run that ENDS without reporting a total must not keep saying
@@ -5276,6 +5507,11 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         // readout must stop saying "idle" the moment Run is pressed, not up to
         // two seconds later.
         refreshLoad()
+        // ⭐⭐ The breadcrumb: if the process dies between here and the
+        // `finally` below, the next launch says so ([CrashReport]). A render is
+        // the likeliest moment for that — it is when gigabytes of checkpoint
+        // are resident.
+        CrashReport.mark(getApplication(), renderingBreadcrumb())
         runJob = viewModelScope.launch {
             try {
                 block()
@@ -5296,6 +5532,10 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                 // silence (`notes/HANDOFF.md` §5).
                 say("$label threw ${e.javaClass.simpleName}: ${e.message}", bad = true)
             } finally {
+                // ⚠ FIRST in the finally: every other line here can throw, and a
+                // breadcrumb left behind turns the next routine reclaim into a
+                // false crash report — the one thing this was asked not to do.
+                CrashReport.clear(getApplication())
                 settleRunLog()
                 busy = false
                 runJob = null
@@ -5331,6 +5571,18 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
      * must come after all of it.
      */
     init {
+        // ⭐⭐ Asked at app open, exactly once per process, and null on an
+        // ordinary launch.
+        //
+        // ⚠⚠⚠ **FIRST, before [refreshModels].** That function's backstop
+        // clears the breadcrumb whenever nothing is installing or running —
+        // which at startup is always true — so calling it first would delete the
+        // evidence of the crash being reported and every kill would read as
+        // idle. The two are correct individually and wrong in the other order.
+        //
+        // ⚠ `runCatching`: a diagnostic must never be the thing that stops the
+        // app opening ([DeviceProbe] makes the same promise).
+        crashReport = runCatching { CrashReport.pending(app) }.getOrNull()
         refreshModels()
     }
 }

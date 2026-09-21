@@ -422,7 +422,7 @@
     <string name="family_note_flux2">约 6.7 GB。仅支持 8 Elite 或更新的芯片。512 到 2048 任意尺寸。建议使用 Wi-Fi。</string>
     <string name="family_note_zimage">约 8.8 GB。仅支持 8 Elite 或更新的芯片。尚在完善中：在部分 8 Elite 手机上会崩溃。建议使用 Wi-Fi。</string>
     <string name="family_note_sdxl">每个约 3.5 GB，解压时还需要约 7.5 GB 可用空间。建议使用 Wi-Fi。</string>
-    <string name="import_dit_body">一个 .safetensors 文件 —— 来自 CivitAI 或 Hugging Face 的主模型，可直接使用，无需转换。它会共用该家族内置模型的文本编码器和 VAE，因此请先下载内置模型。</string>
+    <string name="import_dit_body">一个 .safetensors 文件 —— 来自 CivitAI 或 Hugging Face 的主模型，可直接使用，无需转换。它会借用文本编码器和本家族的 VAE：如果你已经有本家族的模型，就没有任何东西需要下载；只有另一个家族的则是 336 MB；两个都没有则是 2.6 GB。</string>
     <string name="import_zip_body">一个 QNN 模型文件的压缩包，需在电脑上转换。支持 SD 1.5、SDXL 或 Anima —— 会自动识别。</string>
     <string name="model_ready">%1$s 已就绪</string>
     <string name="flow_needs_model">此流程需要主模型</string>
@@ -561,4 +561,35 @@
     <string name="family_anima">Anima</string>
     <string name="family_flux2">FLUX.2</string>
     <string name="family_zimage">Z-Image</string>
+
+    <!-- ⚠⚠ 上游 v1.6.0（2026-09-21）新增：崩溃报告、LoRA 选择器、LoRA 提示、
+         DiT 尺寸滑杆。键必须与 values/strings.xml 的同名块一一对应。 -->
+    <string name="btn_ok">确定</string>
+    <string name="btn_done">完成</string>
+    <string name="btn_choose">选择</string>
+    <string name="btn_change">更改</string>
+    <string name="btn_none">无</string>
+    <string name="crash_notice_title">上次出了点问题</string>
+    <string name="crash_notice_details">详情</string>
+    <string name="crash_notice_doing">发生在%1$s时。</string>
+    <string name="crash_what_crash">应用崩溃了</string>
+    <string name="crash_what_crash_native">应用在原生代码中崩溃了</string>
+    <string name="crash_what_anr">应用无响应</string>
+    <string name="crash_what_low_memory">Android 为释放内存关闭了应用</string>
+    <string name="crash_what_signaled">Android 终止了应用</string>
+    <string name="crash_what_unknown">应用意外关闭</string>
+    <string name="crash_headline_detail">%1$s —— %2$s</string>
+    <string name="lora_picker_none">这台手机上还没有 LoRA。在「设置」标签页导入一个 .safetensors，它就会出现在这里。</string>
+    <string name="lora_missing">不在这台手机上 —— 请导入它，或取消勾选</string>
+    <string name="lora_delete_title">删除 %1$s？</string>
+    <string name="lora_delete_body">任何引用它的节点都会拒绝运行，直到你重新导入它或取消勾选。</string>
+    <string name="lora_hint">叠加在此主模型之上的适配器 —— 请在「设置」标签页导入</string>
+    <string name="lora_locked_zimage">Z-Image 暂不支持 —— 引擎不会从 Z-Image 适配器绑定任何张量</string>
+    <string name="lora_no_context">在此宿主上使用 LoRA 需要 Android 上下文</string>
+    <string name="dit_size_hint">任意尺寸，按 %1$d 像素步进，两条边都可以 —— 无需重新加载，画面越大耗时按比例增加</string>
+    <string name="err_dit_family_in_name">.safetensors 的文件名里必须带上家族名 —— %1$s</string>
+    <string name="phase_downloading_shared">正在下载共享部分</string>
+    <string name="knob_loras">LoRA 适配器</string>
+    <string name="loras_title">LoRA 适配器</string>
+    <string name="loras_body">一个体积很小的适配器文件，用来给主模型叠加风格或角色。仅限 FLUX.2 和 Z-Image —— 在采样器节点的「LoRA 适配器」旋钮上选择。</string>
 </resources>
