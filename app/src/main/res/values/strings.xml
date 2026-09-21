@@ -31,6 +31,8 @@
     <string name="log_done">done</string>
     <string name="log_seed_locked">seed locked: %1$s</string>
     <string name="log_seed_random">seed: random</string>
+    <string name="seed_random_plain">seed random</string>
+    <string name="seed_value">seed %1$s</string>
     <string name="cd_copy_log">Copy the run log</string>
     <string name="cd_hide_log">Hide the run log</string>
     <string name="cd_lock_seed">Lock the last seed, so every Run makes the same picture</string>
@@ -484,6 +486,44 @@
     <string name="hint_spread_mask">spread the mask outward</string>
     <string name="port_out_w">Output width</string>
     <string name="port_out_h">Output height</string>
+    <!-- ⭐ What a KNOB is called in the inspector. The widget's `name` is the
+         param key a workflow writes down and must never change; these are only
+         what is drawn. `CanvasModel.knobLabel` falls back to the sentence-cased
+         id for any name not listed here, so a plugin's own knob still reads. -->
+    <string name="knob_aspect">Aspect</string>
+    <!-- ⭐ What a NODE is called on the canvas. `CanvasModel.nodeLabel` strips
+         the type id (`core.image` → `image`) and MUST NOT be translated — it
+         also generates node ids. `nodeLabelText` is the display-only accessor. -->
+    <string name="node_image">Image</string>
+    <string name="node_output">Output</string>
+    <string name="node_prompt">Prompt</string>
+    <string name="node_mask">Mask</string>
+    <string name="node_mask_crop">Mask crop</string>
+    <string name="node_paste">Paste</string>
+    <string name="node_upscale">Upscale</string>
+    <string name="node_segment_model">Segment model</string>
+    <string name="node_first_frame">First frame</string>
+    <string name="node_sample">Sample</string>
+    <string name="node_vae_decode">VAE decode</string>
+    <string name="node_vae_encode">VAE encode</string>
+    <string name="node_latent_blend">Latent blend</string>
+    <string name="node_sample_legacy">Sample (legacy)</string>
+    <string name="knob_width">Width</string>
+    <string name="knob_height">Height</string>
+    <string name="knob_model">Model</string>
+    <string name="knob_seed">Seed</string>
+    <string name="knob_steps">Steps</string>
+    <string name="knob_denoise">Denoise</string>
+    <string name="knob_scheduler">Scheduler</string>
+    <string name="knob_prompt">Prompt</string>
+    <string name="knob_negative">Negative prompt</string>
+    <string name="knob_feather">Feather</string>
+    <string name="knob_grow">Grow</string>
+    <string name="knob_name">Name</string>
+    <string name="knob_save">Save</string>
+    <string name="knob_upscale">Upscale</string>
+    <string name="knob_uri">Picture</string>
+    <string name="knob_stitch">Stitch to original image</string>
     <string name="cd_kept_in_results">kept in Results</string>
     <string name="cd_keep_what">keep this %1$s in Results</string>
     <string name="err_flow_gone">"%1$s" is gone</string>

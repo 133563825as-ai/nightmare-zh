@@ -189,15 +189,25 @@ private val CHIP_CENTRE = 6.dp
  *
  * ⚠ Falls through to the English name, so a PLUGIN's own `paletteName` (which
  * this app has no translation for) is shown as the plugin author wrote it.
+ *
+ * ⚠⚠⚠ **Matched on the LOWERCASED name, and that is a fix, not tidiness.**
+ * `NodeType.paletteName` DEFAULTS to `name.substringAfterLast('.')`, so the
+ * ordinary nodes arrive here as `"image"`, `"prompt"`, `"upscale"`, `"output"`
+ * — all lowercase. Only the three that override the property (`"Image"` from
+ * the sampler, `"Video"`, `"Segment model"`) arrive capitalised. Matching on
+ * the literal strings therefore translated those three and silently fell
+ * through to English for every other card, which is what the palette showed.
+ * ⚠ `"segment_model"` is listed beside `"Segment model"` because the same
+ * default produces the underscored id for the segmenter's non-overriding path.
  */
-private fun paletteNameText(name: String): String = when (name) {
-    "Image" -> NmApp.str(R.string.palette_image, name)
-    "Video" -> NmApp.str(R.string.palette_video, name)
-    "Prompt" -> NmApp.str(R.string.palette_prompt, name)
-    "Upscale" -> NmApp.str(R.string.palette_upscale, name)
-    "Output" -> NmApp.str(R.string.palette_output, name)
-    "Inpaint" -> NmApp.str(R.string.palette_inpaint, name)
-    "Segment model" -> NmApp.str(R.string.palette_segment_model, name)
+private fun paletteNameText(name: String): String = when (name.lowercase()) {
+    "image" -> NmApp.str(R.string.palette_image, name)
+    "video" -> NmApp.str(R.string.palette_video, name)
+    "prompt" -> NmApp.str(R.string.palette_prompt, name)
+    "upscale" -> NmApp.str(R.string.palette_upscale, name)
+    "output" -> NmApp.str(R.string.palette_output, name)
+    "inpaint" -> NmApp.str(R.string.palette_inpaint, name)
+    "segment model", "segment_model" -> NmApp.str(R.string.palette_segment_model, name)
     else -> name
 }
 

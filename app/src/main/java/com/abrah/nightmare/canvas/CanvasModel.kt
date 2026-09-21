@@ -1040,22 +1040,98 @@ private val LABEL_OVERRIDES = mapOf(
 val String.nodeLabel: String
     get() = LABEL_OVERRIDES[this] ?: substringAfterLast(':').substringAfterLast('.')
 
-// ⚠ Abbreviations a sentence-case rule would get wrong, and ids too terse to
-// read as words. Everything else is the id with `_` as a space, Capitalised.
+/**
+ * ⭐⭐ **The node's name on the canvas, in the phone's language.**
+ *
+ * ⚠⚠⚠ [nodeLabel] must stay English: `CanvasState` builds a new node's ID from
+ * it (`type.name.nodeLabel.lowercase()`), so translating that property would
+ * start writing Chinese node ids into workflow files. This accessor is the
+ * display half, and only [nodeNameOf] reads it.
+ *
+ * ⚠ Applied AFTER [nodeLabel], so the `LABEL_OVERRIDES` collapse
+ * (`sd.clip_encode` → `prompt`) is what gets looked up — the same order the
+ * palette uses, and the reason the prompt node reads as one word everywhere.
+ *
+ * ⚠ A plugin's own type falls through to its English id, which the app has no
+ * translation for and must not invent.
+ */
+private val NODE_LABEL_RES: Map<String, Int> = mapOf(
+    "image" to R.string.node_image,
+    "output" to R.string.node_output,
+    "prompt" to R.string.node_prompt,
+    "mask" to R.string.node_mask,
+    "mask_crop" to R.string.node_mask_crop,
+    "paste" to R.string.node_paste,
+    "upscale" to R.string.node_upscale,
+    "segment_model" to R.string.node_segment_model,
+    "first_frame" to R.string.node_first_frame,
+    "sample" to R.string.node_sample,
+    "vae_decode" to R.string.node_vae_decode,
+    "vae_encode" to R.string.node_vae_encode,
+    "latent_blend" to R.string.node_latent_blend,
+    "sample_legacy" to R.string.node_sample_legacy,
+)
+
+/** ⭐ [nodeLabel], translated. See the note on [NODE_LABEL_RES] for why this is
+ *  a second property rather than a change to [nodeLabel] itself. */
+val String.nodeLabelText: String
+    get() {
+        val english = nodeLabel
+        val res = NODE_LABEL_RES[english] ?: return english
+        return NmApp.str(res, english)
+    }
+
+// ⚠ Abbreviations a sentence-case rule would get wrong. Everything else is the
+// id with `_` as a space, Capitalised.
+//
+// ⚠⚠⚠ These are PLAIN LITERALS on purpose. This is a top-level `val`, so its
+// initializer runs during class init — before `Application.onCreate` — and a
+// `NmApp.str` call here would hand back the English fallback for the whole
+// process. It used to do exactly that for `out_w`/`out_h`, which is the trap
+// [com.abrah.nightmare.canvas.Recipe.labelText] documents. The translated
+// names live in [KNOB_LABEL_RES] and are resolved at read time instead.
 private val KNOB_OVERRIDES = mapOf(
     "cfg" to "CFG",
-    "out_w" to NmApp.str(R.string.port_out_w, "Output width"),
-    "out_h" to NmApp.str(R.string.port_out_h, "Output height"),
     "w" to "Width",
     "h" to "Height",
     "uri" to "Picture",
-    // ⚠ DreamUI's own words for the same toggle.
     "stitch" to "Stitch to original image",
 )
 
 /**
- * ⭐⭐ What a KNOB is called on screen — `cfg` → `CFG`, `out_w` → `Output width`,
- * `denoise` → `Denoise`.
+ * ⚠⚠ Knob name → the string resource it is drawn as, read through [NmApp.str]
+ * at CALL time (never at class-init — see [KNOB_OVERRIDES]).
+ *
+ * ⚠⚠⚠ The `else` in [knobLabel] is what a plugin's own knob falls through to,
+ * so a name not listed here still reads as the id with spaces.
+ */
+private val KNOB_LABEL_RES: Map<String, Int> = mapOf(
+    "aspect" to R.string.knob_aspect,
+    "width" to R.string.knob_width,
+    "w" to R.string.knob_width,
+    "height" to R.string.knob_height,
+    "h" to R.string.knob_height,
+    "model" to R.string.knob_model,
+    "seed" to R.string.knob_seed,
+    "steps" to R.string.knob_steps,
+    "denoise" to R.string.knob_denoise,
+    "scheduler" to R.string.knob_scheduler,
+    "prompt" to R.string.knob_prompt,
+    "negative" to R.string.knob_negative,
+    "feather" to R.string.knob_feather,
+    "grow" to R.string.knob_grow,
+    "name" to R.string.knob_name,
+    "save" to R.string.knob_save,
+    "upscale" to R.string.knob_upscale,
+    "uri" to R.string.knob_uri,
+    "stitch" to R.string.knob_stitch,
+    "out_w" to R.string.port_out_w,
+    "out_h" to R.string.port_out_h,
+)
+
+/**
+ * ⭐⭐ What a KNOB is called on screen — `cfg` → `CFG`, `out_w` → `输出宽度`,
+ * `denoise` → `重绘强度`.
  *
  * ⚠⚠ The same split [nodeLabel] makes for a node: the widget's `name` is the
  * param key a workflow file and a manifest write down, and must never change;
@@ -1066,7 +1142,12 @@ private val KNOB_OVERRIDES = mapOf(
  * is the bug that section records three times.
  */
 val String.knobLabel: String
-    get() = KNOB_OVERRIDES[this] ?: replace('_', ' ').replaceFirstChar { it.uppercase() }
+    get() {
+        val english = KNOB_OVERRIDES[this]
+            ?: replace('_', ' ').replaceFirstChar { it.uppercase() }
+        val res = KNOB_LABEL_RES[this] ?: return english
+        return NmApp.str(res, english)
+    }
 
 /** ⚠ The same label inside a sentence: `Batching 4 denoise values`, `4 CFG values`. */
 val String.knobWord: String

@@ -3416,9 +3416,11 @@ internal fun SeedRow(
     ) {
         Text(
             when {
-                seed == null -> "seed random"
+                // ⚠ Both were hard-coded English over a Chinese UI; the chip
+                // sits on the canvas where it is read constantly.
+                seed == null -> stringResource(R.string.seed_random_plain)
                 compact -> seed
-                else -> "seed $seed"
+                else -> stringResource(R.string.seed_value, seed)
             },
             style = LogTextStyle,
             color = tint ?: MaterialTheme.colorScheme.onSurfaceVariant,

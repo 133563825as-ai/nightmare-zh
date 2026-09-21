@@ -3,6 +3,7 @@ package com.abrah.nightmare
 // ⚠ The canvas package owns the type-to-word rule and its overrides
 // ([nodeLabel]); [nodeNameOf] below reuses it rather than keeping a second copy.
 import com.abrah.nightmare.canvas.nodeLabel
+import com.abrah.nightmare.canvas.nodeLabelText
 import java.security.MessageDigest
 
 /**
@@ -574,7 +575,9 @@ fun nodeNameOf(node: Node, types: Map<String, NodeType> = NODE_TYPES): NodeName 
     // second line from `prompt` to `clip_encode` — caught by the canvas
     // goldens, 2026-09-21, which is the sibling rule failing yet again.
     val type = types[node.type]
-    val title = type?.titleFor(node) ?: node.type.nodeLabel
+    // ⚠⚠ `nodeLabelText`, not `nodeLabel`: the latter is the ID half and stays
+    // English (see its doc), this is the half drawn on a node card.
+    val title = type?.titleFor(node) ?: node.type.nodeLabelText
     val sampler = type as? SdSampler
     return if (sampler != null && isAutoNodeId(node.id, types)) {
         // ⚠⚠ The JOB big and the FAMILY small, not the whole title big: the

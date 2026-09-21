@@ -273,8 +273,17 @@ fun RunLogPanel(
                             "Batching %1\$s seeds",
                             seedSweep,
                         )
-                        st.value != null -> "seed locked: ${st.value}"
-                        else -> "seed: random"
+                        // ⚠⚠ The two strings below were hard-coded English even
+                        // though `log_seed_locked` / `log_seed_random` already
+                        // existed and were already translated — upstream had
+                        // them and never referenced them anywhere, so the seed
+                        // chip read English over a Chinese UI.
+                        st.value != null -> NmApp.str(
+                            R.string.log_seed_locked,
+                            "seed locked: %1\$s",
+                            st.value,
+                        )
+                        else -> NmApp.str(R.string.log_seed_random, "seed: random")
                     }.let { t -> st.label?.let { "$it · $t" } ?: t },
                     style = LogTextStyle,
                     color = if (st.value != null) {
