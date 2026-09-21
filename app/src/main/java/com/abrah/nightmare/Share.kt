@@ -50,7 +50,8 @@ object Share {
     fun image(context: Context, png: ByteArray, name: String) {
         val f = File(staging(context), sanitise(name) + ".png")
         f.writeBytes(png)
-        send(context, uriFor(context, f), "image/png", "Share picture")
+        send(context, uriFor(context, f), "image/png",
+            NmApp.str(R.string.share_image, "Share image"))
     }
 
     /**
@@ -64,7 +65,8 @@ object Share {
         f.outputStream().use {
             bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
         }
-        send(context, uriFor(context, f), "image/png", "Share picture")
+        send(context, uriFor(context, f), "image/png",
+            NmApp.str(R.string.share_image, "Share image"))
     }
 
     /**
@@ -84,7 +86,8 @@ object Share {
     fun video(context: Context, file: File, name: String) {
         val f = File(staging(context), sanitise(name) + ".mp4")
         file.copyTo(f, overwrite = true)
-        send(context, uriFor(context, f), "video/mp4", "Share clip")
+        send(context, uriFor(context, f), "video/mp4",
+            NmApp.str(R.string.share_clip, "Share clip"))
     }
 
     /**
@@ -97,7 +100,8 @@ object Share {
     fun workflow(context: Context, json: String, name: String) {
         val f = File(staging(context), sanitise(name) + ".json")
         f.writeText(json)
-        send(context, uriFor(context, f), "application/json", "Share flow")
+        send(context, uriFor(context, f), "application/json",
+            NmApp.str(R.string.share_workflow, "Share workflow"))
     }
 
     /**

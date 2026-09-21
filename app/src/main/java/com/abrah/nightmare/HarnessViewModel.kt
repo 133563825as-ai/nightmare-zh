@@ -462,7 +462,9 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
             val dir = java.io.File(getApplication<Application>().filesDir, "sent").apply { mkdirs() }
             val file = java.io.File(dir, "sent_${System.currentTimeMillis()}.png")
             if (!runCatching { write(file) }.getOrDefault(false)) {
-                withContext(kotlinx.coroutines.Dispatchers.Main) { toast("That picture could not be read") }
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    toast(getApplication<Application>().getString(R.string.toast_picture_unreadable))
+                }
                 return@launch
             }
             fun takesPicture(g: Graph) = g.nodes.any { it.type == "core.image" }
@@ -971,7 +973,7 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
 
     /** ⚠ What the shade and the toast call the thing downloading — one lookup for all four installers. */
     private fun downloadLabel(id: String): String = when (id) {
-        VIDEO_INSTALL_ID -> "Video models"
+        VIDEO_INSTALL_ID -> NmApp.str(R.string.label_video_models, "Video models")
         SEGMENTER_INSTALL_ID -> com.abrah.nightmare.segment.Segmenter.LABEL
         else -> ModelCatalog.byId(id)?.label ?: UpscalerCatalog.byId(id)?.label ?: id
     }
@@ -984,12 +986,12 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun downloadSucceeded(label: String) {
         DownloadNotice.done(getApplication(), label, ok = true)
-        toast("$label downloaded")
+        toast(NmApp.str(R.string.toast_downloaded, "%1\$s downloaded", label))
     }
 
     private fun downloadFailed(label: String, why: String) {
         DownloadNotice.done(getApplication(), label, ok = false, detail = why)
-        toast("$label failed — $why")
+        toast(NmApp.str(R.string.toast_download_failed, "%1\$s failed — %2\$s", label, why))
     }
 
     /** ⚠ Stopped by the user: no outcome to report, so the row simply goes. */
@@ -1481,11 +1483,11 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         val wf = com.abrah.nightmare.canvas.Workflow(g, emptyMap())
         run("upscale") {
             upscalingResult = spec.label
-            toast("Upscaling with ${spec.label}…")
+            toast(NmApp.str(R.string.toast_upscaling, "Upscaling with %1\$s…", spec.label))
             try {
                 if (!ops.ensureBackendFor(g, nodeTypes)) {
                     say("upscale: no backend", bad = true)
-                    toast("could not start the backend to upscale")
+                    toast(NmApp.str(R.string.toast_upscale_no_backend, "could not start the backend to upscale"))
                     return@run
                 }
                 val r = ops.runWorkflow(wf)
@@ -1495,11 +1497,11 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                     // ⚠ Logged AND toasted: a toast alone left nothing to read
                     // when this failed on the phone (2026-09-17).
                     say("upscale failed — $why", bad = true)
-                    toast("upscale failed — $why")
+                    toast(NmApp.str(R.string.toast_upscale_failed, "upscale failed — %1\$s", why))
                     return@run
                 }
                 keepResult(img.id, flow = wf)
-                toast("Upscaled — kept as a new result")
+                toast(NmApp.str(R.string.toast_upscaled_kept, "Upscaled — kept as a new result"))
             } finally {
                 upscalingResult = null
             }
@@ -2934,7 +2936,7 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
             // ⚠ Toasted too: every OUTCOME of a save is announced the same
             // way, or the one that fails is the one nobody hears about.
             say("that picture is no longer in memory — Run again to remake it", bad = true)
-            toast("That picture is no longer in memory — Run again")
+            toast(NmApp.str(R.string.toast_picture_evicted, "That picture is no longer in memory — Run again"))
             return
         }
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -2953,13 +2955,16 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                     onSuccess = {
                         say("saved " + what + " to " + it)
                         toast(
-                            if (clip != null) "Clip saved to the gallery"
-                            else "Saved to the gallery"
+                            if (clip != null) {
+                                NmApp.str(R.string.toast_clip_saved_gallery, "Clip saved to the gallery")
+                            } else {
+                                NmApp.str(R.string.toast_saved_gallery, "Saved to the gallery")
+                            }
                         )
                     },
                     onFailure = {
                         say("could not save the " + what + " — ${it.message}", bad = true)
-                        toast("Could not save: " + it.message)
+                        toast(NmApp.str(R.string.toast_could_not_save, "Could not save: %1\$s", it.message.orEmpty()))
                     },
                 )
             }
@@ -3840,13 +3845,15 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         // there is the whole reason `ResultsStore` copies it ([Result.videoPath]).
         keptClip(id)?.let { clip ->
             runCatching { Share.video(getApplication(), clip, "nightmare-" + id) }
-                .onFailure { toast("Could not share: " + it.message) }
+                .onFailure { toast(NmApp.str(R.string.toast_share_failed, "Could not share: %1\$s", it.message.orEmpty())) }
             return
         }
         val png = results.fullBytes(id)
-        if (png == null) { toast("That picture is missing"); return }
+        if (png == null) { toast(NmApp.str(R.string.toast_picture_missing, "That picture is missing")); return }
         runCatching { Share.image(getApplication(), png, "nightmare-" + id) }
-            .onFailure { toast("Could not share: " + it.message) }
+            .onFailure {
+                toast(NmApp.str(R.string.toast_share_failed, "Could not share: %1\$s", it.message.orEmpty()))
+            }
     }
 
     /** ⚠ See [clipForImage] for why the FILE decides, not a stored flag. */
@@ -3862,27 +3869,30 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun shareResultFlow(id: String) {
         val loaded = results.flow(id)
-        if (loaded == null) { toast("That flow could not be read"); return }
+        if (loaded == null) {
+            toast(NmApp.str(R.string.toast_flow_unreadable, "That flow could not be read"))
+            return
+        }
         runCatching {
             Share.workflow(
                 getApplication(),
                 loaded.workflow.toJson(nodeTypes, loaded.view),
                 resultFlowName(id),
             )
-        }.onFailure { toast("Could not share: " + it.message) }
+        }.onFailure { toast(NmApp.str(R.string.toast_share_failed, "Could not share: %1\$s", it.message.orEmpty())) }
     }
 
     /** ⭐ Share a SAVED workflow from the Flows tab. */
     fun shareSavedWorkflow(name: String) {
         val loaded = runCatching { store.load(name) }.getOrNull()
-        if (loaded == null) { toast("\"" + name + "\" could not be read"); return }
+        if (loaded == null) { toast(NmApp.str(R.string.toast_named_unreadable, "\"%1\$s\" could not be read", name)); return }
         runCatching {
             Share.workflow(
                 getApplication(),
                 loaded.workflow.toJson(nodeTypes, loaded.view),
                 name,
             )
-        }.onFailure { toast("Could not share: " + it.message) }
+        }.onFailure { toast(NmApp.str(R.string.toast_share_failed, "Could not share: %1\$s", it.message.orEmpty())) }
     }
 
     /**
@@ -3897,17 +3907,17 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         // ⭐⭐ The clip, when this node made one — see [clipForImage].
         clipForImage(imageId)?.let { clip ->
             runCatching { Share.video(getApplication(), clip, name) }
-                .onFailure { toast("Could not share: " + it.message) }
+                .onFailure { toast(NmApp.str(R.string.toast_share_failed, "Could not share: %1\$s", it.message.orEmpty())) }
             return
         }
         // ⚠⚠ The bitmap, for the reason [saveImage] gives.
         val bmp = ops.images.get(imageId)
         if (bmp == null) {
-            toast("That picture is no longer in memory — Run again")
+            toast(NmApp.str(R.string.toast_picture_evicted, "That picture is no longer in memory — Run again"))
             return
         }
         runCatching { Share.image(getApplication(), bmp, name) }
-            .onFailure { toast("Could not share: " + it.message) }
+            .onFailure { toast(NmApp.str(R.string.toast_share_failed, "Could not share: %1\$s", it.message.orEmpty())) }
     }
 
     fun saveResultsToGallery(ids: Collection<String>) {
@@ -3947,10 +3957,16 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                         else -> "" + (ok - clips) + " + " + clips +
                             (if (clips == 1) " clip" else " clips")
                     }
-                    toast("Saved " + what + " to the gallery")
+                    toast(NmApp.str(R.string.toast_saved_gallery, "Saved to the gallery"))
                     say("saved " + what + " to the gallery")
                 } else {
-                    toast("Could not save: " + (lastError ?: "nothing to save"))
+                    toast(
+                            NmApp.str(
+                                R.string.toast_could_not_save,
+                                "Could not save: %1\$s",
+                                lastError ?: NmApp.str(R.string.toast_nothing_to_save, "nothing to save"),
+                            )
+                        )
                     say("could not save — " + lastError, bad = true)
                 }
             }
@@ -4053,37 +4069,51 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
         val out = mutableListOf<Pair<String, String>>()
         val s = samplers.lastOrNull()
         if (s == null) {
-            out += "Size" to "${r.width}x${r.height}"
-            out += "Nodes" to g.nodes.size.toString()
+            out += NmApp.str(R.string.details_size, "Size") to "${r.width}x${r.height}"
+            out += NmApp.str(R.string.details_nodes, "Nodes") to g.nodes.size.toString()
             return out
         }
         val type = types[s.type]
         val p = applyDefaults(type?.widgets.orEmpty(), s)
-        out += "Node" to (type?.titleFor(s) ?: s.type)
+        out += NmApp.str(R.string.details_node, "Node") to (type?.titleFor(s) ?: s.type)
         s.inputs["prompt"]?.node?.let { g.byId[it] }?.params?.let { pp ->
-            pp["prompt"]?.takeIf { it.isNotBlank() }?.let { out += "Prompt" to it }
-            pp["negative"]?.takeIf { it.isNotBlank() }?.let { out += "Negative" to it }
+            pp["prompt"]?.takeIf { it.isNotBlank() }?.let {
+                out += NmApp.str(R.string.knob_prompt, "Prompt") to it
+            }
+            pp["negative"]?.takeIf { it.isNotBlank() }?.let {
+                out += NmApp.str(R.string.knob_negative, "Negative prompt") to it
+            }
         }
         val skip = setOf("x", "y", "w", "h", CropNode.LOCKED)
         for (w in type?.widgets.orEmpty()) {
             if (w.name in skip) continue
             val v = p[w.name] ?: continue
             when (w.name) {
-                "model" -> out += "Model" to (ModelCatalog.byId(v)?.label ?: v)
+                "model" -> out += NmApp.str(R.string.knob_model, "Model") to
+                    (ModelCatalog.byId(v)?.label ?: v)
                 // ⚠ The ROLLED seed: the param is 0 ("new every Run") on most flows.
-                "seed" -> out += "Seed" to (if (v == "0") r.seed ?: v else v)
+                "seed" -> out += NmApp.str(R.string.knob_seed, "Seed") to
+                    (if (v == "0") r.seed ?: v else v)
                 MaskNode.OPS -> {
                     val m = MaskState.decode(v)
                     if (!m.isEmpty) {
                         val taps = m.ops.count { it is MaskOp.Tap }
-                        out += "Mask" to "${m.ops.size - taps} strokes, $taps tapped"
+                        out += NmApp.str(R.string.node_mask, "Mask") to NmApp.str(
+                            R.string.details_mask_strokes,
+                            "%1\$d strokes, %2\$d tapped",
+                            m.ops.size - taps,
+                            taps,
+                        )
                     }
                 }
                 else -> if (v.isNotBlank()) out += w.name.knobLabel to v
             }
         }
-        out += "Output" to "${r.width}x${r.height}"
-        if (samplers.size > 1) out += "Samplers in the chain" to samplers.size.toString()
+        out += NmApp.str(R.string.node_output, "Output") to "${r.width}x${r.height}"
+        if (samplers.size > 1) {
+            out += NmApp.str(R.string.details_samplers_chain, "Samplers in the chain") to
+                samplers.size.toString()
+        }
         return out
     }
 
@@ -4109,7 +4139,7 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                     val loaded = results.flow(id) ?: return@mapNotNull null
                     val json = loaded.workflow.toJson(nodeTypes, loaded.view)
                     (resultFlowName(id) + ".json") to { f: java.io.File -> f.writeText(json) }
-                }, "application/json", "Share flows")
+                }, "application/json", NmApp.str(R.string.share_flows, "Share flows"))
             } else {
                 val entries = list.mapNotNull { id ->
                     keptClip(id)?.let { clip ->
@@ -4125,7 +4155,7 @@ class HarnessViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 com.abrah.nightmare.Share.many(ctx, entries, mime, "Share")
             }
-        }.onFailure { toast("Could not share: " + it.message) }
+        }.onFailure { toast(NmApp.str(R.string.toast_share_failed, "Could not share: %1\$s", it.message.orEmpty())) }
     }
 
     fun viewResult(r: com.abrah.nightmare.canvas.Result) {

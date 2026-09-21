@@ -62,6 +62,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.res.stringResource
+import androidx.annotation.StringRes
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -768,7 +769,11 @@ internal fun NodeInspectorBody(
             val editingName = renaming
             if (editingName == null) {
                 Text(
-                    nodeId,
+                    // ⚠ `nodeDisplayName`, so an automatic id is drawn as the
+                    // translated type name (`upscale_2` → `放大 2`) instead of
+                    // the English-derived id. ⚠ The RENAME field below still
+                    // edits the real id — that is what every wire points at.
+                    com.abrah.nightmare.nodeDisplayName(node, type),
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 20.sp,
                     modifier = Modifier.pointerInput(nodeId) {
@@ -2152,7 +2157,9 @@ private fun ChoiceDropdown(
     var open by remember { mutableStateOf(false) }
     ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }) {
         OutlinedTextField(
-            value = current,
+            // ⚠ `optionLabel`, so the closed field shows the upscaler's display
+            // name rather than its catalogue id.
+            value = optionLabel(current),
             onValueChange = {},
             readOnly = true,
             label = { Text(label) },
@@ -2173,7 +2180,7 @@ private fun ChoiceDropdown(
         ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             for (o in options) {
                 DropdownMenuItem(
-                    text = { Text(o) },
+                    text = { Text(optionLabel(o)) },
                     onClick = { onPick(o); open = false },
                 )
             }
@@ -2622,7 +2629,14 @@ private fun InpaintPopupBody(
     }
 }
 
-private enum class MaskParam(val label: String) { SIZE("Size"), GROW("Grow"), FEATHER("Feather") }
+// ⚠ Resource IDS, not literals: these are the dropdown's own labels, and they
+// were the last hard-coded English in the mask editor. Resolved at draw time
+// through `stringResource`, so no class-init read.
+private enum class MaskParam(@StringRes val labelRes: Int) {
+    SIZE(R.string.mask_param_size),
+    GROW(R.string.knob_grow),
+    FEATHER(R.string.knob_feather),
+}
 
 /**
  * ⭐⭐ DreamUI's shared mask slider: a dropdown naming the parameter, the track,
@@ -2666,7 +2680,7 @@ private fun MaskParamSlider(
                 onClick = { menu = true },
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
             ) {
-                Text(param.label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                Text(stringResource(param.labelRes), style = MaterialTheme.typography.labelLarge, maxLines = 1)
                 Icon(
                     androidx.compose.material.icons.Icons.Filled.ArrowDropDown,
                     contentDescription = stringResource(R.string.cd_slider_target),
@@ -2675,7 +2689,7 @@ private fun MaskParamSlider(
             }
             androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 for (o in options) {
-                    DropdownMenuItem(text = { Text(o.label) }, onClick = { param = o; menu = false })
+                    DropdownMenuItem(text = { Text(stringResource(o.labelRes)) }, onClick = { param = o; menu = false })
                 }
             }
         }
@@ -3225,6 +3239,37 @@ private fun maxStepMultiple(sweep: com.abrah.nightmare.BatchParams.Sweep): Int {
 private fun fixed(v: Float, decimals: Int): String =
     String.format(java.util.Locale.ROOT, "%.${decimals}f", v)
 
+/**
+ * ⭐⭐ **What an option VALUE is drawn as.**
+ *
+ * ⚠⚠ Most option values are already what should be shown, and a blanket
+ * translation would be wrong: `1:1` and `1536` are numbers, and `Karras`,
+ * `Euler A` and `Segment Anything 2.1` are BACKEND identifiers and proper nouns
+ * that this app deliberately never translates.
+ *
+ * ⚠⚠⚠ A few are not display names at all:
+ *  - the upscaler list carries CATALOGUE IDS (`upscaler_anime`), which have a
+ *    display name of their own ([com.abrah.nightmare.UpscalerSpec.labelText]);
+ *  - the crop pad is a bare word out of the workflow file (`black`/`blur`).
+ * Drawn raw, the upscaler chip read `Upscaler_anime` — an id, on a control the
+ * user picks a model from.
+ *
+ * ⚠ Everything else keeps the sentence-cased value the chips always drew, so a
+ * plugin's own option is shown as its author wrote it.
+ */
+@Composable
+private fun optionLabel(value: String): String {
+    com.abrah.nightmare.UpscalerCatalog.ALL.firstOrNull { it.id == value }?.let {
+        return it.labelText
+    }
+    val res = when (value) {
+        CropNode.PAD_BLACK -> R.string.option_pad_black
+        CropNode.PAD_BLUR -> R.string.option_pad_blur
+        else -> return value.replaceFirstChar { it.uppercase() }
+    }
+    return stringResource(res)
+}
+
 @Composable
 private fun ChoiceRow(
     label: String,
@@ -3247,7 +3292,9 @@ private fun ChoiceRow(
                     onClick = { onPick(o) },
                     // ⚠ A chip is pressed, so it is Capitalised (§7.1). The VALUE
                     // written stays `black` — only what is drawn changes.
-                    label = { Text(o.replaceFirstChar { it.uppercase() }, fontSize = 12.sp) },
+                    // ⚠ `optionLabel`, not a bare `replaceFirstChar`: an
+                    // upscaler value is an id (see the note there).
+                    label = { Text(optionLabel(o), fontSize = 12.sp) },
                     shape = RoundedCornerShape(10.dp),
                     colors = FilterChipDefaults.filterChipColors(),
                 )

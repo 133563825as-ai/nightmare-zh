@@ -123,12 +123,16 @@ class OpService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Harness ops", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(
+                    CHANNEL,
+                    NmApp.str(R.string.channel_harness_ops, "Harness ops"),
+                    NotificationManager.IMPORTANCE_LOW,
+                )
             )
         }
         val n: Notification = Notification.Builder(this, CHANNEL)
             .setContentTitle("Nightmare harness")
-            .setContentText("running an op")
+            .setContentText(NmApp.str(R.string.notif_running_op, "running an op"))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

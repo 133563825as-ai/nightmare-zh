@@ -1123,6 +1123,10 @@ private val KNOB_LABEL_RES: Map<String, Int> = mapOf(
     "name" to R.string.knob_name,
     "save" to R.string.knob_save,
     "upscale" to R.string.knob_upscale,
+    // ⚠ `upscaler`, not `upscale`: `UpscaleNode.UPSCALER` is the widget name
+    // the upscale node actually declares, and it is a CONST — a scan for
+    // `Widget("literal")` misses it, which is why this card read "Upscaler".
+    "upscaler" to R.string.knob_upscaler,
     "uri" to R.string.knob_uri,
     "stitch" to R.string.knob_stitch,
     "out_w" to R.string.port_out_w,

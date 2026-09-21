@@ -585,10 +585,45 @@ fun nodeNameOf(node: Node, types: Map<String, NodeType> = NODE_TYPES): NodeName 
         // ([SdSampler.jobFor]). The family is the half a person can also read
         // off the checkpoint field, so it is the half that gives way.
         NodeName(sampler.jobFor(node), sampler.family.label)
+    } else if (isAutoNodeId(node.id, types)) {
+        // ⭐⭐ **An automatic id says nothing the type does not — and it is
+        // derived from the ENGLISH type id, so it read `upscale_2` over a
+        // Chinese UI.** [primary] is documented as "what the user called it,
+        // else what it does"; this is the "else".
+        //
+        // ⚠⚠ [Graph.freeId]'s `_2`, `_3`… suffix IS KEPT: it is the only thing
+        // telling two nodes of the same kind apart in the swipe chips, and
+        // dropping it would draw two identical headings.
+        //
+        // ⚠ A renamed node keeps its id verbatim — that one IS what the user
+        // called it, and translating a name a person typed would be worse than
+        // any amount of English.
+        val suffix = AUTO_ID_SUFFIX.find(node.id)?.value.orEmpty().replace('_', ' ')
+        NodeName(title + suffix, node.type.takeIf { it != title })
     } else {
         NodeName(node.id, title.takeIf { it != node.id })
     }
 }
+
+/**
+ * ⭐⭐ [nodeNameOf]'s big line, for a caller that holds ONE [type] rather than
+ * the whole registry — `NodeInspectorBody` draws the node's heading from this
+ * so the sheet and the canvas box agree.
+ *
+ * ⚠ A renamed node returns its id verbatim; only an automatic one is shown as
+ * its translated name (see the note in [nodeNameOf]).
+ */
+fun nodeDisplayName(node: Node, type: NodeType?): String {
+    val title = type?.titleFor(node) ?: node.type.nodeLabelText
+    return if (isAutoNodeId(node.id)) {
+        title + AUTO_ID_SUFFIX.find(node.id)?.value.orEmpty().replace('_', ' ')
+    } else {
+        node.id
+    }
+}
+
+/** ⚠ `_2`, `_3`… — the part `Graph.freeId` appends to a duplicate auto id. */
+private val AUTO_ID_SUFFIX = Regex("""_[0-9]+$""")
 
 /** ⚠ The ones that carry a mask, its editor and the paste back. */
 val INPAINT_TYPES: Set<String> = SdSampler.ALL.filter { it.inpaint }.map { it.name }.toSet()
