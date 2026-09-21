@@ -1,0 +1,1789 @@
+package com.abrah.nightmare
+
+import android.content.Context
+import java.io.File
+
+/**
+ * ⭐ One file of a plain-file model package: where it is published, what the
+ * backend expects it to be called, and its exact served size — THE integrity
+ * check, exactly as a zip's byte count is ([ModelInstaller.fetch]).
+ */
+data class RemoteFile(val url: String, val name: String, val bytes: Long)
+
+/**
+ * ⭐ What a checkpoint IS, as opposed to which files it ships.
+ *
+ * ⚠ The family decides the **node vocabulary** and the native resolution, and
+ * nothing else (`docs/MODELS.md` §2). Two checkpoints of the same family are
+ * interchangeable in a graph; two families are not, because `sd.sample` on an
+ * SDXL model is a different `--type` and therefore a different [ContextKey].
+ */
+enum class Family(
+    val label: String,
+    /**
+     * ⭐⭐⭐ **A general-purpose starter prompt for the whole family**, and the
+     * fallback for any checkpoint that carries none of its own.
+     *
+     * ⚠⚠ **No SUBJECT in it.** Every per-model prompt in this file names one
+     * — "a cat on grass", "1girl, solo, cute, white hair" — because upstream
+     * wrote them as demos of a checkpoint's style. That is right for a
+     * checkpoint we know and wrong as a default: a person who came to draw
+     * something has to delete a cat before they can start. These are quality
+     * tags only, so the box is finished by typing what you want.
+     *
+     * ⚠ It does NOT replace [ModelSpec.prompt] — a checkpoint's own text is
+     * still what that checkpoint opens on ([ModelSpec.starterPrompt]), and the
+     * upstream-verbatim rule above is untouched. This fills the two gaps that
+     * rule leaves: an IMPORTED model, whose prompt is empty by design, and the
+     * user asking for a neutral starting point. The user's ask, 2026-09-15.
+     */
+    val prompt: String,
+    val negative: String,
+    /** ⚠ For ids — a new node is `sdxl_inpaint`, never `SDXL Inpaint` with a space. */
+    val slug: String,
+    /**
+     * ⭐⭐ Rendered WHOLE by `libdit_engine.so` (upstream local-dream 3.0): one
+     * `/generate` call, prompt and optional picture in, picture out. No
+     * conditioning or latent handles exist for it, no patches, no inpaint, and
+     * its size is a request field rather than a launch one.
+     */
+    val dit: Boolean = false,
+) {
+    SD15("SD 1.5", GP_SD15, GP_SD15_NEG, "sd15"),
+    SDXL("SDXL", GP_SDXL, GP_SDXL_NEG, "sdxl"),
+    ANIMA("Anima", GP_ANIMA, GP_ANIMA_NEG, "anima"),
+    FLUX2("FLUX.2", GP_DIT, GP_DIT_NEG, "flux2", dit = true),
+    ZIMAGE("Z-Image", GP_DIT, GP_DIT_NEG, "zimage", dit = true),
+}
+
+// ---- the general-purpose prompts --------------------------------------------
+
+/**
+ * ⚠ The DiT families read SENTENCES through a Qwen3 text encoder, not CLIP
+ * tags, and both published checkpoints are distilled to cfg 1 — where a
+ * negative prompt is not read at all. Upstream ships them with an empty one.
+ */
+private const val GP_DIT = "a detailed photo,"
+
+/**
+ * ⭐⭐ **A starting negative for the DiT families** — the user's ask,
+ * 2026-09-19, replacing the empty string that stood here because upstream ships
+ * one.
+ *
+ * ⚠⚠⚠ **It does nothing at cfg 1, and that is not a bug in it.** Both shipped
+ * checkpoints are guidance-distilled and open at cfg 1.0, where
+ * `stable-diffusion.cpp` skips the unconditional pass entirely — the text
+ * reaches the engine through `dit_gen_params.negative_prompt` and is never
+ * encoded. Raise cfg above 1 on the node and it starts being read, at roughly
+ * twice the time per step. ⇒ It is here so the box is not empty and so the knob
+ * works the moment it can, NOT because it changes today's default render. The
+ * decision was made knowing that (the user's call, asked and answered).
+ *
+ * ⚠ SENTENCE-shaped, not a CLIP tag list. Qwen3 reads prose, so `GP_SD15_NEG`'s
+ * comma-separated tags would be read as a sentence about commas — the same
+ * reason [GP_DIT] is a phrase rather than "masterpiece, best quality".
+ */
+private const val GP_DIT_NEG =
+    "blurry, low quality, distorted, deformed, watermark, text, oversaturated"
+
+// ⚠ Top-level rather than inside [ModelCatalog]: [Family] is declared above it
+// and an enum's constructor arguments must be compile-time constants it can see.
+
+/**
+ * ⚠ SD 1.5 reads TAGS, not sentences — this is a tag list by design, and it is
+ * the shape every per-model SD 1.5 prompt in this file has.
+ */
+private const val GP_SD15 =
+    "masterpiece, best quality, ultra-detailed, sharp focus, 8k,"
+
+/**
+ * ⚠ The union of what the per-model SD 1.5 negatives agree on, with anything
+ * style-specific dropped — no "cartoon, anime" (that belongs to the
+ * photographic checkpoints) and no "realistic photo" (that belongs to the anime
+ * ones). A general negative that fights half the catalogue is not general.
+ */
+private const val GP_SD15_NEG =
+    "worst quality, low quality, normal quality, lowres, blurry, out of focus, " +
+        "jpeg artifacts, signature, watermark, text, error, bad anatomy, " +
+        "bad hands, missing fingers, extra digit, cropped,"
+
+/** ⚠ SDXL needs fewer quality tags than SD 1.5 — it was trained on captions. */
+private const val GP_SDXL =
+    "masterpiece, best quality, highly detailed, sharp focus,"
+
+/**
+ * ⚠ The quality prefix every published Anima checkpoint's own `config.json`
+ * opens with — `masterpiece, best quality, score_7` — without the demo that
+ * follows it (a girl holding a sign), for the no-subject reason above.
+ */
+private const val GP_ANIMA = "masterpiece, best quality, score_7,"
+
+/**
+ * ⚠⚠ Unread at the published cfg of 1 — every Anima `config.json` says so in
+ * its own words. It is here for a user who raises cfg, where it starts to matter.
+ */
+private const val GP_ANIMA_NEG =
+    "worst quality, low quality, lowres, blurry, jpeg artifacts, bad anatomy, " +
+        "bad hands, extra fingers, watermark, signature, text,"
+
+/** ⚠ Upstream's own general SDXL negative, which eight of the ten already use. */
+private const val GP_SDXL_NEG =
+    "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, " +
+        "fewer digits, cropped, worst quality, low quality, normal quality, " +
+        "jpeg artifacts, signature, watermark, username, blurry,"
+
+/**
+ * Where a model runs.
+ *
+ * ⚠ This decides the **device gate** and the speed, and nothing else:
+ * `sd15cpu` and `sd15npu` are the same [Family] and drive the same nodes
+ * (`docs/MODELS.md` §2). It is separate from [Family] precisely so a CPU
+ * fallback is a second runtime rather than a second vocabulary.
+ */
+enum class Runtime { NPU, CPU }
+
+/**
+ * A resolution a model's graphs were compiled for.
+ *
+ * ⚠⚠ Not a preference. `--patch` binds at backend launch like everything else
+ * in a [ContextKey], and `sdxl`/`anima` **force 1024 inside the backend's
+ * request parser whatever the client sends** -- so a graph asking for 512 on
+ * one of those renders 1024 in silence. That is the reason this lives on the
+ * model rather than as a `"512"` default next to the widget.
+ */
+data class Res(val width: Int, val height: Int) {
+    override fun toString() = "${width}x$height"
+
+    val isSquare: Boolean get() = width == height
+
+    /** Pixels, so a list of these sorts by cost. */
+    val area: Int get() = width * height
+
+    /** width / height, for anything that has to match the output's shape. */
+    val aspect: Float get() = width.toFloat() / height.toFloat()
+
+    /**
+     * ⭐ The zstd patch this resolution needs, or **null for the base 512²**
+     * that `unet.bin` already is.
+     *
+     * ⚠ Matches what the conversion pipeline emits, and the two forms are not
+     * interchangeable: `768.patch` for a square, `512x768.patch` for a
+     * rectangle (`npuconvert/export.sh`). ⚠⚠ Per width AND height — handing a
+     * portrait build the square patch is a graph of the wrong shape, and the
+     * backend does not check.
+     */
+    val patchName: String?
+        get() = when {
+            this == ModelCatalog.SD15_NPU_RES -> null
+            isSquare -> "$width.patch"
+            else -> "${width}x$height.patch"
+        }
+
+    companion object {
+        /** `768.patch` and `512x768.patch` respectively. */
+        private val SQUARE_PATCH = Regex("""^(\d+)\.patch$""")
+        private val RECT_PATCH = Regex("""^(\d+)x(\d+)\.patch$""")
+
+        /**
+         * The inverse of [toString] — `"768x512"` back to a [Res].
+         *
+         * ⚠ Shared by the chips and by the `res_use` harness op so a size typed
+         * on a command line and one tapped on screen cannot parse differently.
+         */
+        fun fromLabel(s: String): Res? {
+            val p = s.split("x")
+            if (p.size != 2) return null
+            val w = p[0].trim().toIntOrNull() ?: return null
+            val h = p[1].trim().toIntOrNull() ?: return null
+            return if (w > 0 && h > 0) Res(w, h) else null
+        }
+
+        /** Parses a patch filename back into a resolution, or null when it is not one. */
+        fun fromPatch(name: String): Res? {
+            SQUARE_PATCH.matchEntire(name)?.let { m ->
+                val n = m.groupValues[1].toIntOrNull() ?: return null
+                return Res(n, n)
+            }
+            RECT_PATCH.matchEntire(name)?.let { m ->
+                val w = m.groupValues[1].toIntOrNull() ?: return null
+                val h = m.groupValues[2].toIntOrNull() ?: return null
+                return Res(w, h)
+            }
+            return null
+        }
+    }
+}
+
+/**
+ * ⭐⭐ ONE published build of a checkpoint, and the two numbers that decide
+ * whether this phone can load it.
+ *
+ * ⚠⚠ A checkpoint is published several ways and **only the graph config
+ * differs** — same weights, same pictures. `_8gen2` is a v73 context wanting
+ * 8 MB of VTCM, `_8gen1` a v69 one wanting 8 MB, `_min` a v68 one wanting 2 MB.
+ * A QNN context runs **forward only**, so a v69 HTP cannot load a v73 build at
+ * all: it is not slower, it fails at load after the whole download.
+ *
+ * ⇒ Serving the wrong tier is the difference between an app that works on one
+ * phone and an app that works. `../LocalDream/docs/DEVICE-SUPPORT.md` §5.
+ *
+ * ⚠ [bytes] is per-tier and is **data, not arithmetic** — the tiers differ in
+ * both directions and by tens of MB. It is the only integrity check
+ * [ModelInstaller] has, so every one of these was HEAD-checked against the repo.
+ */
+data class Build(
+    /** The archive-name suffix, e.g. `_8gen2`. Also what the user is told they got. */
+    val tier: String,
+    val archive: String,
+    val bytes: Long,
+    /** The HTP arch this CONTEXT needs. A lower-arch device cannot load it. */
+    val minArch: Int,
+    val minVtcmMb: Int,
+    /**
+     * ⭐ Further archives extracted into the same model dir — archive name to
+     * served byte count, on the same base URL.
+     *
+     * ⚠⚠ Per BUILD, not per model, because what they carry is resolution
+     * patches: a patch is a byte-diff against ONE `unet.bin`, so an `_8gen2`
+     * patch reconstructs garbage against a `_min` install. Only the build it
+     * was cut from may fetch it, and [ModelSpec.availableResolutions] then
+     * discovers it from disk like any other patch.
+     */
+    val extras: List<Pair<String, Long>> = emptyList(),
+) {
+    fun runsOn(caps: DeviceProbe.Caps): Boolean =
+        caps.arch >= minArch && caps.vtcmMb >= minVtcmMb
+}
+
+/**
+ * Which checkpoints exist, where they come from, and whether one is installed.
+ *
+ * ⚠ This file is DATA plus disk state; fetching lives in [ModelInstaller] and
+ * the picking UI in `ui/ModelsScreen.kt`. Before it existed the model was a
+ * free-text widget defaulting to a directory somebody had pushed over adb by
+ * hand, so a user had no way to obtain a model at all.
+ *
+ * ⭐ The set is **local-dream's own five SD1.5 NPU checkpoints**. That is the
+ * base-model support this project is a fork of, and `docs/ARCHITECTURE.md` §5.1
+ * pins [V1_MODEL] as v1's default out of the five. The rest are downloadable
+ * because a graph may use any ONE of them — §5.2 pins one context key per
+ * *graph*, not one model per install, and the executor already refuses a graph
+ * that names two.
+ */
+data class ModelSpec(
+    /** The directory name, and the value of every node's `model` param. */
+    val id: String,
+    val label: String,
+    /**
+     * ⭐⭐ Every published build, **best first**.
+     *
+     * ⚠⚠ Each carries its own EXACT size, and that size is the only integrity
+     * check that exists: there is no published checksum, and
+     * `HttpURLConnection` reports success on a truncated body — a short read
+     * looks like a finished download and fails later as a corrupt model.
+     *
+     * ⚠ Ordered by preference, not by size, because [buildFor] takes the FIRST
+     * one the device can load. Highest arch first: it is the fastest build the
+     * hardware will accept.
+     */
+    val builds: List<Build>,
+    /** A prompt that suits this checkpoint. Model data, never translated: SD1.5 reads English tags. */
+    val prompt: String,
+    val negative: String,
+    val family: Family = Family.SD15,
+    val runtime: Runtime = Runtime.NPU,
+    /**
+     * ⭐ The backend's `--type` -- the first third of a [ContextKey], and one of
+     * the three things bound at process launch.
+     *
+     * ⚠ Derived from [family] + [runtime] + capability in principle, and stored
+     * explicitly anyway: `sd15npu_inpaint` and `sd15npu_control_inpaint` are the
+     * same family and runtime as `sd15npu`, so the mapping is not a function of
+     * two enums and pretending it is would need a third enum to fix it later.
+     */
+    val backendType: String = ModelCatalog.SD15_NPU,
+    /**
+     * ⚠ **First is native** -- what a new node is sized to, and what the locked
+     * `width`/`height` widgets show. The rest are what the resolution patches in
+     * the archive make reachable; nothing reads them yet, because a second
+     * resolution is a second [ContextKey] and v1 pins one (§5.2).
+     */
+    val resolutions: List<Res> = listOf(ModelCatalog.SD15_NPU_RES),
+    /**
+     * ⚠ Per-family, because SDXL is a **different repository** —
+     * `xororz/sdxl-qnn`, not `xororz/sd-qnn`. It was one constant while there
+     * was one family.
+     */
+    val baseUrl: String = ModelCatalog.SD15_BASE_URL,
+    /**
+     * ⚠⚠ What the backend needs before it will start, **per family**.
+     * SD 1.5 wants one `clip_v2.mnn`; SDXL wants two encoders with their own
+     * embedding tables and CLIP-G's external weight file. A file list that is
+     * merely close makes a 3.7 GB model report "not installed" forever, with no
+     * error anywhere — nothing reads a required list and asks why.
+     */
+    val requiredFiles: List<String> = ModelCatalog.SD15_REQUIRED,
+    /**
+     * The archive tier, which is a statement about the CHIP: `_8gen2` is a v73
+     * context, `_8gen3` a v75 one. ⚠ Named so it can be checked rather than
+     * trusted — [ModelCatalog.TIER] used to be one constant spliced into every
+     * filename, which cannot express a catalogue with two.
+     */
+    val tier: String = ModelCatalog.TIER,
+    /**
+     * ⚠ The HTP architecture below which this model cannot load AT ALL.
+     * SDXL is compiled `_8gen3`, so 75. ✅ **Enforced** — `buildFor` returns
+     * null below this and the row says the device cannot run it
+     * (`docs/DEVICES.md`). ⚠⚠ Enforced is not TESTED: the APK carries all six
+     * arch tiers, and every row above this phone's V79 is derived from
+     * LocalDream's measurements rather than re-measured here.
+     */
+    val minHtpArch: Int = 68,
+    /**
+     * `--lowram`: load and release each stage rather than holding the whole
+     * pipeline resident. ⚠ Not a preference — SDXL's UNet is ~3× SD 1.5's at
+     * 1024², and DreamUI sets it on every SDXL checkpoint.
+     *
+     * ⚠⚠ **One flag, TWO meanings, decided by the family.** On a DiT package
+     * `main.cpp` does not stage anything — it turns this into the engine's
+     * `params_backend = "te=disk"`, which streams the text encoder's parameters
+     * off disk and holds the rest. Same word, same flag, different mechanism;
+     * what the two share is "this model does not fit resident on a 12 GB
+     * phone". ⇒ Read the branch in `createPipeline` before reasoning about what
+     * it costs for a given model.
+     */
+    val lowram: Boolean = false,
+    /**
+     * ⭐⭐ The sampler this checkpoint was TUNED for, and the default a new
+     * `sd.sample` node picks up.
+     *
+     * ⚠⚠ Not cosmetic, and not a small effect. Measured on device 2026-09-10
+     * against an imported distilled SDXL checkpoint at its published settings
+     * (10 steps, cfg 1.5): `dpm` produced a crunchy, over-sharpened picture
+     * with halos, `euler_a` a clean natural one — same seed, same steps, same
+     * cfg, same weights. A distilled model is trained for a particular sampler
+     * and the wrong one does not fail, it looks *bad*.
+     *
+     * ⚠ [ModelCatalog.DEFAULT_SCHEDULER] for everything we publish, because
+     * that is what the backend used for all of them before the field was sent
+     * — so this changes no built-in's output. A checkpoint that wants
+     * otherwise says so: a custom model through `config.json`'s
+     * `default_scheduler` ([CustomModels.Config]), a catalogue entry by setting
+     * this.
+     */
+    val scheduler: String = ModelCatalog.DEFAULT_SCHEDULER,
+    /**
+     * ⭐⭐ The step count and guidance this checkpoint wants — the other two
+     * thirds of the same problem [scheduler] solves.
+     *
+     * ⚠⚠ A **distilled** model is the case that makes these model data rather
+     * than user preference. This app's node defaults (20 steps, cfg 7.5) are
+     * right for an ordinary checkpoint and badly wrong for a distilled one,
+     * which publishes something like 10 steps at cfg 1.5 — and at 7.5 it does
+     * not fail, it renders burnt and oversaturated. Measured on device
+     * 2026-09-10 against an imported SDXL checkpoint whose page says exactly
+     * that.
+     *
+     * ⚠ The defaults here are the node's own, so a catalogue entry that says
+     * nothing behaves exactly as before.
+     */
+    val steps: Int = ModelCatalog.DEFAULT_STEPS,
+    val cfg: Double = ModelCatalog.DEFAULT_CFG,
+    /**
+     * ⭐ The user brought this one — see [CustomModels].
+     *
+     * ⚠⚠ It is **not** derivable from `builds.isEmpty()`, though today the two
+     * coincide. The empty build list says "nothing to download"; this says
+     * "nothing we published, so we know nothing about it" — which is what the
+     * UI must branch on. A built-in whose archives were withdrawn would have
+     * the first property and not the second, and would want the "unsupported"
+     * wording rather than the "you imported this" wording.
+     */
+    val isCustom: Boolean = false,
+    /**
+     * ⭐ How many CLIP tokens the UNet reads: 77, or 231 for an npuforge SDXL
+     * export (`qnn_context.txt` = `231_masked_v1` — three 77-token chunks and an
+     * attention mask; `backend-patches/005`). Only the prompt COUNT reads it:
+     * the backend detects the contract from the same file on its own.
+     */
+    val promptTokens: Int = 77,
+    /**
+     * ⭐⭐ A package of PLAIN FILES rather than a zip — the DiT families, whose
+     * weights are fetched from the repositories that publish them (upstream's
+     * `packageFiles`). Empty for everything else. When non-empty, the installer
+     * fetches these into the model dir and [builds] only gates the device.
+     */
+    val files: List<RemoteFile> = emptyList(),
+) {
+    /** ⭐ Rendered by the DiT engine through `/generate` — see [Family.dit]. */
+    val isDit: Boolean get() = family.dit
+
+    /**
+     * ⭐ A TRUE inpainting checkpoint — a 9-channel UNet whose `conv_in`
+     * takes the mask, not a plain one masked by latent blending.
+     *
+     * ⚠ Read off [backendType] rather than a flag of its own, because that
+     * string is what actually launches the backend (`--type sd15npu_inpaint`);
+     * a separate boolean would be a second place for the same fact to live and
+     * to disagree. `docs/MODELS.md`, `../LocalDream/docs/INPAINT.md`.
+     */
+    val isInpaint: Boolean get() = backendType.contains("inpaint")
+
+    /** ⚠ [resolutions] is never empty; the constructor default is one entry. */
+    val native: Res get() = resolutions.first()
+
+    /**
+     * ⭐⭐ **What a new prompt node opens on for this checkpoint** — its own
+     * text, or its family's general-purpose one when it has none.
+     *
+     * ⚠⚠ Every reader of [prompt] as a STARTING POINT wants this one.
+     * [prompt] is raw catalogue data and is empty for an imported model, which
+     * is how an import ended up opening a blank prompt box while every built-in
+     * opened on upstream's text. ⚠ [modelPromptRetarget] still reads [prompt]
+     * as well, because it has to recognise the OLD text to decide whether it may
+     * overwrite it.
+     */
+    val starterPrompt: String get() = prompt.ifBlank { family.prompt }
+
+    /** ⚠ See [starterPrompt]; both fields answer the same way or neither does. */
+    val starterNegative: String get() = negative.ifBlank { family.negative }
+
+    /**
+     * ⭐⭐ **The label in the phone's language, where one exists.**
+     *
+     * ⚠⚠ An accessor rather than a translated [label], for the reason
+     * `ModelCatalog` is an `object`: this initializer runs during class init,
+     * before `Application.onCreate`, so a resource read in the constructor
+     * would cache the English fallback for the whole process — the trap
+     * `Recipe.labelText` documents.
+     *
+     * ⚠ Falls through to [label] for every checkpoint this app has no
+     * translation for — which is most of them, deliberately: a model's name is
+     * a proper noun (`SDXL Base 1.0`, `AbsoluteReality`) and is not translated.
+     * Only where the catalogue itself wrote English prose does a translation
+     * exist.
+     */
+    val labelText: String
+        get() {
+            val res = when (id) {
+                "absreality_inpaint" -> R.string.model_absreality_inpaint
+                else -> return label
+            }
+            return NmApp.str(res, label)
+        }
+
+    /**
+     * ⭐⭐ The best build this phone can actually load, or **null** when it can
+     * load none.
+     *
+     * ⚠ Null is a real answer and the UI must show it as one: SDXL publishes
+     * `_8gen3` only, so on anything below a v75 HTP there is no build at all —
+     * not a slower one, none. Falling back to "download the biggest and hope"
+     * is how a user spends 3.5 GB on a file their chip rejects at load.
+     */
+    fun buildFor(caps: DeviceProbe.Caps): Build? = builds.firstOrNull { it.runsOn(caps) }
+
+    /**
+     * ⚠ The PREFERRED build, for anything that must name one without a device.
+     *
+     * ⚠⚠ **Nullable**, and it must stay that way: a [CustomModels] entry has no
+     * builds at all, and this was `builds.first()` — which threw from the
+     * delete confirmation the moment an imported model could be deleted. A
+     * caller that wants a download size has to handle "there isn't one".
+     */
+    val best: Build? get() = builds.firstOrNull()
+
+    fun url(b: Build): String = baseUrl + b.archive
+
+    fun dir(context: Context): File = File(ModelCatalog.root(context), id)
+
+    /** Required files that are absent — i.e. why the backend cannot start. */
+    fun missing(context: Context): List<String> {
+        val d = dir(context)
+        // ⚠⚠ A plain-file package is downloaded IN PLACE, so an interrupted
+        // download leaves a real file of the right name and the wrong size.
+        // Existence alone would call a half-fetched 4 GB DiT installed.
+        if (files.isNotEmpty()) {
+            // ⭐⭐⭐ **…unless the user brought their own DiT weights.**
+            //
+            // ⭐⭐ A DiT family loads a plain `.safetensors` at run time — there
+            // is no context binary and no conversion (`docs/ROADMAP.md` §2b) — so
+            // swapping [DIT_WEIGHTS] for a community fine-tune of the same
+            // architecture is a supportable thing to do. The exact-size check
+            // above is what stops it: any other file reads as "not installed"
+            // forever and the Run is refused before the engine sees it.
+            //
+            // ⚠⚠ The marker is the whole mechanism, and it is deliberately
+            // NOT "skip the check when the size differs". That would quietly
+            // accept a half-downloaded 6 GB file, which is the exact failure the
+            // check exists for. A marker is written on purpose, by an import or
+            // by hand, and says *this one file is mine now*.
+            //
+            // ⚠ The other three files keep their exact sizes: the text encoder,
+            // VAE and tokenizer are OURS, shared by every model of the family,
+            // and nobody has a reason to replace one.
+            val byo = File(d, BRING_YOUR_OWN).exists()
+            return files.filter {
+                val len = File(d, it.name).length()
+                if (byo && it.name == DIT_WEIGHTS) len <= 0L else len != it.bytes
+            }.map { it.name }
+        }
+        // ⭐⭐⭐ A DiT package may keep its shared parts BESIDE the models.
+        //
+        // ⚠⚠⚠ This must agree with the backend, which resolves the same three
+        // files the same way (`ditFile()` in `main.cpp`, `backend-patches/010`).
+        // Two answers here is the worst outcome available: the app calls a
+        // model installed and the backend cannot open it, or the reverse hides
+        // a model that would have run.
+        // ⚠ DiT only. An SD model whose own tokenizer went missing must read
+        // as broken, not borrow one.
+        val shared = File(d.parentFile, CustomModels.DIT_SHARED)
+        return requiredFiles.filter {
+            !File(d, it).exists() && !(isDit && File(shared, it).exists())
+        }
+    }
+
+    companion object {
+        /** The DiT weights inside a DiT package — the one file a user may replace. */
+        const val DIT_WEIGHTS = "dit.safetensors"
+
+        /**
+         * ⭐ Present in a model directory: [DIT_WEIGHTS] here is the user's, so
+         * its size is not ours to check. Empty; only its existence means anything.
+         */
+        const val BRING_YOUR_OWN = "custom-dit"
+    }
+
+    /**
+     * Whether the extractor keeps an archive entry of this basename.
+     *
+     * ⚠ Per-spec rather than one catalogue-wide rule, for the same reason
+     * [requiredFiles] is. ⚠ `vae_encoder.bin` is kept although it is not in
+     * every family's REQUIRED list upstream: img2img is a graph edge here.
+     *
+     * ⭐ Resolution patches are kept although v1 cannot use them (§5.2 pins one
+     * context key, and `--patch` binds at backend launch). They are ~80 MB
+     * against a ~1.2 GB install; the alternative when resolution support lands
+     * is re-downloading a gigabyte to obtain them. ⚠ SDXL has none — its graphs
+     * are compiled at a fixed 1024.
+     */
+    fun wanted(name: String): Boolean =
+        name in requiredFiles || name == "vae_encoder.bin" || name.endsWith(".patch")
+
+    fun installed(context: Context): Boolean = missing(context).isEmpty()
+
+    /**
+     * Whether this model's `unet.bin` is a 512 base that resolution patches
+     * apply to.
+     *
+     * ⚠ SDXL's graphs are compiled at a fixed 1024 and ship no patches at all;
+     * ControlNet is a frozen 512 graph. Only the SD 1.5 NPU builds take one —
+     * the 9-channel inpaint UNet included, which the backend patches exactly
+     * as it does `sd15npu`.
+     */
+    val servesPatches: Boolean
+        get() = backendType == ModelCatalog.SD15_NPU || backendType == ModelCatalog.SD15_NPU_INPAINT
+
+    /**
+     * ⭐ Families whose graphs are frozen at one square size and which reach a
+     * non-1:1 output through [ModelCatalog.aspectTarget] instead of a patch.
+     *
+     * ⚠ The backend's own condition is `sdxl || anima`, and it *forces* the
+     * canvas for both — so this is the set for which a size widget is a lie and
+     * an aspect chip is the truth.
+     */
+    val fixedCanvas: Boolean
+        get() = family == Family.SDXL || family == Family.ANIMA
+
+    /**
+     * ⭐⭐ The patch file [res] needs, or null when it needs none.
+     *
+     * ⚠⚠ **Null is ambiguous on its own and the caller must not treat it as
+     * "fine, carry on".** It means either "this is the 512 base" or "this model
+     * takes no patches" — both legitimate — but a patch that is *wanted and
+     * absent* must NOT reach here as null. [missingPatch] is the question a
+     * launch has to ask; upstream and DreamUI both answer it with a warning and
+     * a silent fall back to 512, which is the same wrong-size-reported-as-success
+     * shape `SDXL_NPU_RES` documents.
+     */
+    fun patchFor(context: Context, res: Res): File? {
+        if (!servesPatches) return null
+        val name = res.patchName ?: return null
+        return File(dir(context), name).takeIf { it.exists() }
+    }
+
+    /** The patch [res] needs and does not have, or null when the launch can proceed. */
+    fun missingPatch(context: Context, res: Res): String? {
+        if (!servesPatches) return null
+        val name = res.patchName ?: return null
+        return name.takeIf { !File(dir(context), it).exists() }
+    }
+
+    /**
+     * ⭐ The resolutions this model can actually serve **right now**.
+     *
+     * ⚠⚠ **Discovered from the files on disk, not declared.** Offering a size
+     * whose patch is absent would launch the backend against a `unet.bin` that
+     * cannot serve it, and upstream's answer to that is a silent 512. A
+     * checkpoint whose archive shipped fewer patches therefore offers fewer
+     * sizes instead of offering one that fails — the same reasoning
+     * [DeviceProbe]-gated builds use, applied to graph shapes.
+     *
+     * ⚠ Before install this is just [native]: there are no files to scan yet.
+     */
+    fun availableResolutions(context: Context): List<Res> {
+        // ⭐⭐ A DiT model serves every pair on its grid and needs no file for
+        // any of them: the size is a request field, not a `--patch`
+        // ([backendContextKey]). ⚠ [native] is untouched — it stays
+        // [ModelCatalog.DIT_RES], because that is what the context key is
+        // pinned to and what a new node is born at. This is only the list of
+        // sizes the SIZE CONTROL may offer, which for every other family is
+        // discovered and here is declared.
+        if (isDit) return ModelCatalog.DIT_SHAPES.values.flatten()
+        if (!servesPatches) return resolutions
+        val found = dir(context).listFiles().orEmpty()
+            .filter { it.isFile }
+            .mapNotNull { Res.fromPatch(it.name) }
+        return (listOf(ModelCatalog.SD15_NPU_RES) + found)
+            .distinct()
+            .sortedWith(compareBy({ it.area }, { it.width }))
+    }
+
+    /** What this model occupies on disk, or 0 when it is not installed. */
+    fun bytesOnDisk(context: Context): Long =
+        dir(context).walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
+    /**
+     * ⭐⭐⭐ **What a LAUNCH of this model brings into memory** — which is
+     * not what its directory occupies.
+     *
+     * ⚠⚠⚠ The two differ by 2.6 GB for an IMPORTED DiT package, and that
+     * gap is enough to flip a decision. Measured 2026-09-21: a bring-your-own
+     * Z-Image holds only `dit.safetensors` (6.16 GB) in its own directory and
+     * borrows the text encoder, VAE and tokenizer from [CustomModels.DIT_SHARED],
+     * so [bytesOnDisk] reported 6.16 GB where the built-in reports 8.76 GB. The
+     * residency gate releases a checkpoint over 65% of device RAM — 7.6 GB on
+     * an 11.7 GB phone — so the built-in was released between runs and the
+     * import, which loads exactly the same weights, was not. **Second run:
+     * killed by lmkd while preparing the 5.87 GB of params.** The shared
+     * directory saved disk and quietly lied about memory.
+     *
+     * ⚠ [bytesOnDisk] is still the right answer for "what does this occupy"
+     * and "what would deleting it free" — the two questions are genuinely
+     * different here, so they are two functions rather than one compromise.
+     *
+     * ⚠⚠ Counts a shared part only when this model does NOT have its own
+     * copy, matching how the backend resolves each file (`ditFile()` in
+     * `main.cpp`, `backend-patches/010`) and how [missing] decides it is there.
+     */
+    fun loadedBytes(context: Context): Long {
+        val own = bytesOnDisk(context)
+        if (!isDit) return own
+        val d = dir(context)
+        val shared = File(d.parentFile, CustomModels.DIT_SHARED)
+        return own + requiredFiles
+            .filter { !File(d, it).exists() }
+            .sumOf { File(shared, it).length() }
+    }
+}
+
+object ModelCatalog {
+
+    /**
+     * The `--type` and native size of v1's only family, named once.
+     *
+     * ⚠ Also [ModelSpec]'s constructor default, so a new catalogue entry is
+     * SD 1.5 on the NPU at 512² unless it says otherwise.
+     */
+    const val SD15_NPU = "sd15npu"
+    val SD15_NPU_RES = Res(512, 512)
+
+    /**
+     * ⭐ An SD 1.5 checkpoint whose UNet takes 9 channels — [SD15_NPU]'s layout
+     * with an inpainting `conv_in`. ⚠ A different `--type`, so a different
+     * context key: a graph mixing it with a plain SD 1.5 model relaunches
+     * between them like any two checkpoints.
+     */
+    const val SD15_NPU_INPAINT = "sd15npu_inpaint"
+
+    /**
+     * The same pair for SDXL, named once for the same reason.
+     *
+     * ⚠⚠ 1024 is **not** a default that can be overridden: the backend forces
+     * `width = height = 1024` inside `parseGenerationRequest` for `--type sdxl`
+     * whatever the client sends, so a graph asking for 512 renders 1024 and
+     * reports success.
+     *
+     * ⚠ These were literals inside [sdxl] until custom models needed them too.
+     * A second copy of `"sdxl"` is exactly the hazard [backendTypeOf] documents
+     * — a node keyed one way against a process launched the other does not
+     * fail, it renders at the wrong size in silence.
+     */
+    const val SDXL_NPU = "sdxl"
+    val SDXL_NPU_RES = Res(1024, 1024)
+
+    /**
+     * ⭐ The same pair for Anima. ⚠ 1024 is forced by the backend exactly as it
+     * is for SDXL — `RequestParser.hpp` guards on `sdxl || anima`.
+     */
+    const val ANIMA_NPU = "anima"
+    val ANIMA_NPU_RES = Res(1024, 1024)
+
+    /** ⭐ The DiT engine's `--type`s (backend-patches/007). */
+    const val KLEIN = "klein"
+    const val ZIMAGE = "zimage"
+    /** ⚠ The size a NEW node starts at, and the context key's constant size. */
+    val DIT_RES = Res(1024, 1024)
+    /** ⭐ Upstream's `DitResolution`: any size 512–2048, in 256-px steps. */
+    const val DIT_MIN = 512
+    const val DIT_MAX = 2048
+    const val DIT_STEP = 256
+
+    /**
+     * ⭐ The grid, as ONE function — the sampler snaps a request to it and the
+     * size control below only ever offers values already on it.
+     *
+     * ⚠ It lived as a local `snap` inside `SdSampler.runDit`, which made the
+     * control and the render two places that each decided what a legal DiT size
+     * is. Two such places stop agreeing, and the symptom is a picture that comes
+     * back a different size from the one the sheet says.
+     */
+    fun ditSnap(v: Int): Int =
+        (((v - DIT_MIN) + DIT_STEP / 2) / DIT_STEP * DIT_STEP + DIT_MIN)
+            .coerceIn(DIT_MIN, DIT_MAX)
+
+    /**
+     * ⭐⭐⭐ **A DiT family's size vocabulary: a shape, then a size within it.**
+     *
+     * ⚠⚠⚠ **This is NOT [aspectTarget] and must never be routed through it.**
+     * That one means "render the square canvas the graph is frozen at, then crop
+     * to this ratio", which is what SDXL and Anima do and what
+     * [ModelSpec.fixedCanvas] gates. A DiT model has no fixed canvas — it
+     * renders whatever width and height it is handed — so here the shape
+     * *chooses* the width and height and there is no crop at all.
+     *
+     * ⚠⚠ **Every pair below is EXACT on the 256-px grid, and that is why the
+     * control is a list rather than an aspect chip times a size dropdown.**
+     * Measured while building it, 2026-09-19: an orthogonal pair cannot be
+     * honest here. With the short edge snapped to the grid, `4:3` and `3:2` both
+     * land on 1024x768 at a 1024 long edge — two chips, one output — and `16:9`
+     * at 1024 lands on 1024x512, which is 2:1 and not what the chip says. The
+     * grid is too coarse for a nominal ratio to survive it. ⇒ The shape names a
+     * list of pairs that really have that shape, and the sizes offered differ
+     * per shape because the grid genuinely offers different ones.
+     *
+     * ⚠ `16:9` is the one approximation, and it is 1792x1024 = 1.75 against
+     * 1.778 — under 2%, which no eye finds and no arithmetic here pretends is
+     * exact. There is no 16:9 pair on this grid at all; the alternative was
+     * dropping the shape people most want a wallpaper in.
+     */
+    val DIT_SHAPES: Map<String, List<Res>> = linkedMapOf(
+        "1:1" to listOf(Res(512, 512), Res(768, 768), Res(1024, 1024), Res(1280, 1280), Res(1536, 1536), Res(2048, 2048)),
+        "4:3" to listOf(Res(1024, 768), Res(2048, 1536)),
+        "3:4" to listOf(Res(768, 1024), Res(1536, 2048)),
+        "3:2" to listOf(Res(768, 512), Res(1536, 1024)),
+        "2:3" to listOf(Res(512, 768), Res(1024, 1536)),
+        "16:9" to listOf(Res(1792, 1024)),
+        "9:16" to listOf(Res(1024, 1792)),
+    )
+
+    /**
+     * ⭐ The shape [res] belongs to, or null when a saved flow names a pair no
+     * shape offers (512x2048, say).
+     *
+     * ⚠ Null rather than a nearest guess: the chips then show nothing selected,
+     * which is the honest reading of "this size is not one of these". Silently
+     * highlighting the closest chip would make the next tap look like a no-op.
+     */
+    fun ditShapeOf(res: Res): String? =
+        DIT_SHAPES.entries.firstOrNull { res in it.value }?.key
+
+    /**
+     * ⭐ The size to move to when a shape is picked — the one nearest in AREA to
+     * what the node already renders, so switching 1024x1024 to `16:9` gives
+     * 1792x1024 rather than the smallest pair in the list.
+     */
+    fun ditSizeFor(shape: String, current: Res): Res? {
+        val options = DIT_SHAPES[shape] ?: return null
+        val area = current.width.toLong() * current.height
+        return options.minByOrNull { kotlin.math.abs(it.width.toLong() * it.height - area) }
+    }
+    /** ⭐ What the backend checks for in a DiT package dir (`main.cpp`) — plus the tokenizer it loads for every type. */
+    val DIT_REQUIRED = listOf("dit.safetensors", "llm.gguf", "vae.safetensors", "tokenizer.json")
+
+    /**
+     * ⭐⭐ Non-square output on a family whose graphs are frozen at 1024.
+     *
+     * ⚠⚠ **`aspect_ratio` is a DIFFERENT FEATURE from resolution, wearing a
+     * similar name** (`docs/ROADMAP.md` §Resolution). A resolution patch
+     * changes what the UNet graph *is* and binds at launch; this changes
+     * nothing about the graph. The backend renders the full 1024² canvas and
+     * reaches a non-1:1 output by inpainting a centered rectangle into it
+     * (`RequestParser.hpp`, `aspect_pad_inpaint`), then cropping that rectangle
+     * back out. ⇒ It is a REQUEST field: no patch, no relaunch, and **it is not
+     * part of the context key**.
+     *
+     * ⚠ `1:1` is the identity and is deliberately first: the backend ignores an
+     * `aspect_ratio` whose terms are equal, so sending it is the same as
+     * sending nothing.
+     */
+    val ASPECTS = listOf("1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16")
+
+    const val DEFAULT_ASPECT = "1:1"
+
+    /**
+     * ⚠⚠ **A SECOND COPY of arithmetic that lives in C++, and it has to be
+     * exact.** `RequestParser.hpp` computes the target rectangle and
+     * `Pipeline.hpp` crops to it; on the decomposed op path the crop never runs
+     * (see [VaeDecodeNode]), so the app repeats the sum to know what to cut.
+     * The two drifting apart is an off-centre or wrongly-sized picture with
+     * nothing reporting it.
+     *
+     * ⇒ Mirrors the backend line for line: long edge pinned to the canvas, the
+     * short edge floored to a multiple of 8, a floor of 8, and **equal terms
+     * meaning "no crop"** — the C++ guards on `!(rw == rh)`.
+     *
+     * Returns null when [ratio] is not `w:h`, has a non-positive term, or is
+     * square. All three are "render the plain canvas", which is what the
+     * backend does with them too.
+     */
+    fun aspectTarget(ratio: String, canvas: Res): Res? {
+        val colon = ratio.indexOf(':').takeIf { it >= 0 } ?: return null
+        val rw = ratio.substring(0, colon).trim().toIntOrNull() ?: return null
+        val rh = ratio.substring(colon + 1).trim().toIntOrNull() ?: return null
+        if (rw <= 0 || rh <= 0 || rw == rh) return null
+        // ⚠ `canvas.width` on both branches, matching the C++ literal 1024 --
+        // the backend forces a SQUARE canvas for these families, so there is
+        // only one edge length in play.
+        val edge = canvas.width
+        return if (rw >= rh) {
+            Res(edge, (((edge.toDouble() * rh) / rw).toInt() / 8 * 8).coerceAtLeast(8))
+        } else {
+            Res((((edge.toDouble() * rw) / rh).toInt() / 8 * 8).coerceAtLeast(8), edge)
+        }
+    }
+
+    /**
+     * ⭐⭐ The samplers the backend implements, and the ONLY legal values of a
+     * `scheduler` param.
+     *
+     * ⚠⚠ **Mirrors `backend-src/src/Pipeline.hpp`'s chain of comparisons, and
+     * an unknown string there falls through to `dpm` in silence** — it is not
+     * rejected. So a free-text field would let a typo render with the wrong
+     * sampler and report success, which is why the widget carries these as
+     * [Widget.options] chips rather than as text.
+     *
+     * ⚠ Order is deliberate: [DEFAULT_SCHEDULER] first, then the ancestral and
+     * Karras variants, then `lcm`. It is the order the chips are drawn in.
+     */
+    val SCHEDULERS = listOf(
+        "dpm", "dpm_karras", "dpm_sde", "dpm_sde_karras",
+        "euler", "euler_karras", "euler_a", "euler_a_karras",
+        "lcm",
+    )
+
+    /**
+     * ⭐⭐ The samplers a FAMILY's backend actually distinguishes.
+     *
+     * ⚠⚠ Anima's `makeScheduler` reads exactly one bit: `euler` is the
+     * deterministic flow-match sampler and EVERY other string is the ancestral
+     * one. Offering the nine SD ids there would be eight names for one sampler,
+     * and Karras means nothing on flow-match. ⇒ Two, named for what they do.
+     */
+    fun schedulersFor(family: Family): List<String> = when {
+        family == Family.ANIMA -> listOf("euler", "euler_a")
+        // ⚠ The DiT engine hardcodes euler (`PipelineDit`); the sampler node
+        // draws no scheduler knob for these families at all.
+        family.dit -> listOf("euler")
+        else -> SCHEDULERS
+    }
+
+    /**
+     * ⭐⭐ The FIVE samplers, named the way every other SD tool names them.
+     *
+     * ⚠⚠ Nine wire values, five samplers: the other four are the same sampler
+     * with Karras sigmas. `local-dream`'s own picker presents them exactly this
+     * way (`AdvancedSettingsDialog.kt`: five entries plus a Karras toggle), and
+     * it is the upstream to follow (`CLAUDE.md`). A flat list of nine raw ids
+     * made the user scan `dpm_sde_karras` out of a dropdown to find a thing
+     * they know as "DPM++ 2M SDE".
+     *
+     * ⚠ The stored param is UNCHANGED — still one of [SCHEDULERS]. This is
+     * presentation only, so a saved workflow, a plugin manifest and a bug report
+     * all still carry the wire value.
+     *
+     * ⚠ Order is `local-dream`'s, not alphabetical: the default first.
+     */
+    val SAMPLERS: List<Pair<String, String>> = listOf(
+        "dpm" to "DPM++ 2M",
+        "dpm_sde" to "DPM++ 2M SDE",
+        "euler_a" to "Euler A",
+        "euler" to "Euler",
+        "lcm" to "LCM",
+    )
+
+    /**
+     * ⚠ LCM has no Karras variant — the backend's comparison chain has no
+     * `lcm_karras`, and an unknown string falls through to `dpm` in SILENCE.
+     * Upstream guards the same case (`karrasSupported = baseId != "lcm"`).
+     */
+    fun karrasSupported(base: String) = base != "lcm"
+
+    /** `"dpm_sde_karras"` -> `("dpm_sde", true)`. */
+    fun splitScheduler(value: String): Pair<String, Boolean> {
+        val karras = value.endsWith("_karras")
+        val base = if (karras) value.removeSuffix("_karras") else value
+        // ⚠ An unrecognised base falls back to the default rather than being
+        // passed through: the backend would silently treat it as `dpm`, and a
+        // picker showing nothing selected is how that stays invisible.
+        return if (SAMPLERS.any { it.first == base }) base to karras
+        else DEFAULT_SCHEDULER to false
+    }
+
+    /** The inverse. ⚠ Drops Karras where the sampler has no such variant. */
+    fun joinScheduler(base: String, karras: Boolean): String =
+        if (karras && karrasSupported(base)) base + "_karras" else base
+
+    /** How a wire value should read on screen, e.g. `"DPM++ 2M SDE Karras"`. */
+    fun schedulerLabel(value: String): String {
+        val (base, karras) = splitScheduler(value)
+        val name = SAMPLERS.firstOrNull { it.first == base }?.second ?: base
+        return if (karras) "$name Karras" else name
+    }
+
+    /**
+     * ⚠⚠ **The backend's own default** — `RequestParser.hpp` reads
+     * `json.value("scheduler", "dpm")`. Named here so the app's default and the
+     * backend's cannot drift: before the `scheduler` field was sent at all,
+     * every render in this app silently used this value, including checkpoints
+     * whose author specified something else.
+     */
+    const val DEFAULT_SCHEDULER = "dpm"
+
+    /**
+     * ⚠ The sampler node's own defaults, named here because [ModelSpec] now
+     * carries per-checkpoint overrides of them and the two must agree. 20/7.5
+     * is DreamUI's default too.
+     *
+     * ⚠ The bounds are the widget's, and a `config.json` value outside them is
+     * clamped rather than refused — an author who writes 60 steps meant "a lot",
+     * and the slider cannot express it.
+     */
+    const val DEFAULT_STEPS = 20
+    const val DEFAULT_CFG = 7.5
+    val STEPS_RANGE = 1..50
+    val CFG_RANGE = 1.0..20.0
+
+    /**
+     * xororz's QNN builds — the upstream local-dream publishes against.
+     *
+     * ⚠ **Two repositories, not one.** SDXL lives in `sdxl-qnn`; assuming one
+     * base URL is how a catalogue with a second family produces 404s that look
+     * like network trouble.
+     */
+    const val SD15_BASE_URL = "https://huggingface.co/xororz/sd-qnn/resolve/main/"
+    const val SDXL_BASE_URL = "https://huggingface.co/xororz/sdxl-qnn/resolve/main/"
+    const val ANIMA_BASE_URL = "https://huggingface.co/xororz/anima-qnn/resolve/main/"
+
+    /**
+     * ⚠ Every checkpoint is published as `_8gen1` / `_8gen2` / `_min`, and we
+     * take `_8gen2` — the v73 context, which newer HTPs run forward.
+     *
+     * ⚠⚠ This is NOT yet a device decision, and it must become one. The APK
+     * stages **V79 QNN libs only** (`tools/stage_backend.ps1`), so it already
+     * runs on exactly one phone; shipping a `_min` archive to a chip whose
+     * runtime libraries are absent would fail either way. ⇒ The archive tier and
+     * the staged-library tier have to be lifted together —
+     * `../LocalDream/docs/DEVICE-SUPPORT.md` has the real rule, and
+     * The device-tier half is what is still open; `notes/PROGRESS.md` tracks it.
+     */
+    const val TIER = "_8gen2"
+
+    /**
+     * ⭐⭐ The three ways xororz publishes every SD 1.5 checkpoint, and what
+     * each one demands of the HTP. Only the graph config differs — same
+     * weights, same pictures.
+     *
+     * ⚠⚠ A QNN context runs **forward only**. An 8 Gen 1 has the full 8 MB of
+     * VTCM but a **v69** HTP, so it cannot load the v73 `_8gen2` build at all;
+     * before `_8gen1` was used such a chip fell all the way to `_min` and gave
+     * up three quarters of its VTCM for want of an arch, at roughly 2.5× the
+     * time per image.
+     */
+    const val TIER_8GEN1 = "_8gen1"
+    const val TIER_MIN = "_min"
+    private const val ARCH_8GEN2 = 73
+    private const val ARCH_8GEN1 = 69
+    private const val ARCH_MIN = 68
+
+    /**
+     * ⚠⚠ SDXL is published `_8gen3` ONLY — there is no `_8gen2` SDXL archive to
+     * choose. That is a v75 context, so an 8 Gen 2 cannot load one at all, which
+     * is why every SDXL entry carries `minHtpArch = 75` and why upstream
+     * restricts SDXL to 8 Gen 3 and newer. The arch gate doubles as a rough
+     * memory gate.
+     */
+    const val SDXL_TIER = "_8gen3"
+
+    /**
+     * What `--type sd15npu` needs before it will start.
+     *
+     * ⚠ SD1.5-shaped and hardcoded, which is correct exactly while every entry
+     * in [all] is [Family.SD15]. It becomes per-family with the first SDXL
+     * entry -- `docs/MODELS.md` §3 step 2 -- and deliberately NOT before, so
+     * step 1 changes no behaviour it cannot be blamed for.
+     *
+     * ⚠ `vae_encoder.bin` is required HERE though DreamUI treats it as optional:
+     * `vae_encode` and both img2img routes are graph edges in this app
+     * (`docs/ARCHITECTURE.md` §3), so a model without it is one whose nodes fail
+     * at run time rather than at install time.
+     */
+    val SD15_REQUIRED = listOf(
+        "tokenizer.json", "clip_v2.mnn", "pos_emb.bin", "token_emb.bin",
+        "unet.bin", "vae_decoder.bin", "vae_encoder.bin",
+    )
+
+    /**
+     * ⚠⚠ SDXL's CLIP side is **two encoders**, each with its own embedding
+     * tables — not the single `clip_v2.mnn` SD 1.5 uses. And
+     * `clip_2.mnn.weight` is CLIP-G's EXTERNAL weight file: MNN splits the
+     * bigger encoder into graph plus weights, and `clip_2.mnn` will not load
+     * without it. Dropping it leaves an install that passes every size check
+     * and fails at the first prompt.
+     *
+     * ⚠ The list is the backend's own (`main.cpp`, `--type sdxl`), plus that
+     * weight file, plus `vae_encoder.bin` — required HERE though DreamUI treats
+     * it as optional, because img2img is a graph edge in this app.
+     */
+    val SDXL_REQUIRED = listOf(
+        "tokenizer.json",
+        "clip.mnn", "pos_emb.bin", "token_emb.bin",
+        "clip_2.mnn", "clip_2.mnn.weight", "pos_emb_2.bin", "token_emb_2.bin",
+        "unet.bin", "vae_decoder.bin", "vae_encoder.bin",
+    )
+
+    /**
+     * ⭐ What `--type anima` needs — the backend's own list (`main.cpp`,
+     * `createPipeline`), plus `vae_encoder.bin` for the reason SDXL's has it.
+     *
+     * ⚠⚠ `tokenizer.json` here is QWEN's, not CLIP's; `tokenizer_t5.json` is what
+     * the prompt is counted against. ⚠ No `pos_emb.bin` — the Qwen encoder uses
+     * RoPE — and no patches: the DiT is compiled at 1024.
+     */
+    val ANIMA_REQUIRED = listOf(
+        "tokenizer.json", "tokenizer_t5.json", "token_emb.bin",
+        "clip.bin", "unet_part1.bin", "unet_part2.bin",
+        "vae_decoder.bin", "vae_encoder.bin",
+    )
+
+    fun root(context: Context): File = File(context.getExternalFilesDir(null), "models")
+
+    /** Where a part-downloaded archive lives. ⚠ Not the model dir: a stray zip there reads as a model. */
+    fun downloads(context: Context): File =
+        File(context.getExternalFilesDir(null), "downloads")
+
+    // ---- prompts ---------------------------------------------------------
+    // ⭐⭐ Model parameters rather than UI copy, and **`local-dream`'s own, id
+    // for id** (`../LocalDream/local-dream/.../data/Model.kt`, `codeDefaults`).
+    //
+    // ⚠⚠ These were DreamUI's until 2026-09-12, and DreamUI had collapsed
+    // upstream's per-model text into two shared negatives and one anime prompt
+    // — a simplification that costs exactly what CLAUDE.md warns DreamUI's
+    // simplifications cost. It did not show while nothing READ them; now a new
+    // graph opens on this text, so a checkpoint tuned for chibi opening on a
+    // generic "detailed face" prompt is what the user sees first. The user's
+    // call, 2026-09-12: copy upstream verbatim.
+    //
+    // ⚠ Verbatim also means a picture that differs from local-dream's on the
+    // same checkpoint is a difference in the RUNTIME rather than in what was
+    // asked for — the reason the old ones were copied from DreamUI unchanged.
+
+    /** ⚠ Upstream's one anime negative, shared by its three SD 1.5 anime models and Illustrious. */
+    private const val NEG_ANIME =
+        "lowres, bad anatomy, bad hands, missing fingers, extra fingers, " +
+            "bad arms, missing legs, missing arms, poorly drawn face, bad face, " +
+            "fused face, cloned face, three crus, fused feet, fused thigh, " +
+            "extra crus, ugly fingers, horn, realistic photo, huge eyes, worst face, " +
+            "2girl, long fingers, disconnected limbs,"
+
+    /** ⚠ AnythingV5 and CuteYukiMix share it upstream; QteaMix does NOT (it is chibi). */
+    private const val P_ANIME_GIRL =
+        "masterpiece, best quality, 1girl, solo, cute, white hair,"
+    private const val P_QTEA =
+        "chibi, best quality, 1girl, solo, cute, pink hair,"
+
+    // ⚠ A negative per photographic checkpoint, not one shared constant: upstream
+    // gives AbsoluteReality 22 tags about photo realism and ChilloutMix a shorter
+    // list about skin. Collapsing them was DreamUI's loss, not a tidy-up.
+    /** ⚠ Shared by AbsoluteReality and its inpainting checkpoint — one text, two entries. */
+    private const val P_ABSOLUTE = "masterpiece, best quality, ultra-detailed, realistic, 8k, a cat on grass,"
+
+    private const val NEG_ABSOLUTE =
+        "worst quality, low quality, normal quality, poorly drawn, lowres, " +
+            "low resolution, signature, watermarks, ugly, out of focus, error, " +
+            "blurry, unclear photo, bad photo, unrealistic, semi realistic, " +
+            "pixelated, cartoon, anime, cgi, drawing, 2d, 3d, censored, duplicate,"
+    private const val NEG_CHILLOUT =
+        "paintings, cartoon, anime, lowres, bad anatomy, bad hands, text, error, " +
+            "missing fingers, extra digit, cropped, worst quality, low quality, " +
+            "normal quality, jpeg artifacts, signature, watermark, username, " +
+            "skin spots, acnes, skin blemishes"
+
+    /**
+     * ⭐⭐ **Every checkpoint the app knows about** — ours plus the user's.
+     *
+     * ⚠⚠ This is what [byId] reads, and that is the whole reason
+     * [CustomModels] merges in here rather than being a list the picker knows
+     * about separately. `backendTypeOf` falls back to `sd15npu` for an
+     * unknown id, so a custom SDXL model missing from THIS list would launch
+     * the backend `--type sd15npu` and render 512 in silence.
+     *
+     * ⚠ Order: **SD 1.5 first, then SDXL**, with [V1_MODEL] at the head because
+     * it is v1's default, and imported models last. SD 1.5 first is not
+     * alphabetical tidiness — an SDXL entry is ~3.7 GB against ~1 GB and needs
+     * a newer chip, so the cheap, universally-runnable ones belong where a
+     * user's eye lands first. ⚠ The picker re-sorts anyway (installed first,
+     * per family), so this order is the *curator's*, not the screen's.
+     *
+     * ⚠ Not stable across a [CustomModels.scan] — by design.
+     */
+    val all: List<ModelSpec> get() = builtIn + CustomModels.registered
+
+    /**
+     * ⭐⭐ The ids that are ON THE PHONE, cached so a caller with no
+     * `Context` can still prefer an installed checkpoint.
+     *
+     * ⚠ [UpscalerCatalog.installedIds]'s shape exactly, for its reason: a
+     * recipe is built from half a dozen call sites that have no context to
+     * hand, and threading one through every builder to answer "is this
+     * downloaded?" would be a lot of plumbing for one question.
+     *
+     * ⚠ Empty until [refreshInstalled] runs, so a caller must degrade to the
+     * full catalogue rather than to "nothing is installed".
+     */
+    @Volatile
+    var installedIds: List<String> = emptyList()
+        // ⚠ `internal`, not `private`: `RecipeModelTest` sets it directly rather
+        // than writing a gigabyte of fixture to disk, since this cache is the
+        // only thing `Workflows.ctxKeyParams` reads. Nothing outside the module
+        // can write it.
+        internal set
+
+    /** ⚠ Call after anything that installs, imports or deletes a checkpoint. */
+    fun refreshInstalled(context: Context) {
+        installedIds = all.filter { it.installed(context) }.map { it.id }
+    }
+
+    /**
+     * ⭐⭐ The checkpoints WE publish — the catalogue proper.
+     *
+     * ⚠ Distinct from [all], which also carries whatever [CustomModels.scan]
+     * last found on disk. Anything reasoning about **downloads or device
+     * support in general** wants this one: a custom model has no archive and
+     * makes no arch claim, so counting it among "models this phone can run"
+     * answers a question about our catalogue with a fact about the user's
+     * import.
+     *
+     * ⚠ It is also the collision set. A custom directory whose name matches an
+     * id here is skipped by the scan, because [byId] returns the first match
+     * and a shadowed built-in would point its downloads at the user's files.
+     */
+    val builtIn: List<ModelSpec> get() = sd15Models + sdxlModels + animaModels + ditModels
+
+    /** ⚠ Kept as its own list so a family can be counted, filtered and tested. */
+    /**
+     * One of xororz's SD 1.5 checkpoints, in all three published tiers.
+     *
+     * ⚠ Ordered best-first, which is [ModelSpec.buildFor]'s contract: `_8gen2`
+     * is the fastest build any device that can take it should get, and `_min`
+     * is the one that runs anywhere.
+     */
+    private fun sd15(
+        id: String, label: String, stem: String,
+        bytes8gen2: Long, bytes8gen1: Long, bytesMin: Long,
+        prompt: String, negative: String,
+    ) = ModelSpec(
+        id = id,
+        label = label,
+        builds = listOf(
+            Build(TIER, "${stem}_qnn2.28$TIER.zip", bytes8gen2, ARCH_8GEN2, 8),
+            Build(TIER_8GEN1, "${stem}_qnn2.28$TIER_8GEN1.zip", bytes8gen1, ARCH_8GEN1, 8),
+            Build(TIER_MIN, "${stem}_qnn2.28$TIER_MIN.zip", bytesMin, ARCH_MIN, 2),
+        ),
+        prompt = prompt,
+        negative = negative,
+    )
+
+    /**
+     * ⭐⭐ `Lykon/absolute-reality-1.6525-inpainting` — a 9-channel inpainting
+     * UNet, listed among the SD 1.5 models as an ordinary checkpoint (the
+     * user's call, 2026-09-19). An inpaint node naming it gets true inpainting,
+     * where the model SEES the hole it fills; any other node gets the whole
+     * frame repainted, i.e. text- and image-to-image. The backend decides from
+     * its UNet (`backend-patches/006`), so nothing in the UI asks.
+     *
+     * ⚠⚠ The QAIRT **2.28** rebuild (`fix228c`), from DreamUI, and ONLY that
+     * one: measured equal to the 2.49 build in quality (`extreme_frac` 0.0318
+     * vs 0.0304 at 512², 0.0576 vs 0.0579 at 512×768) and it carries no fp16
+     * stamp, so it is the build meant to load on the chips 2.49 is refused by
+     * (`../LocalDream/docs/MODEL-SUPPORT.md` §4). ⚠ Proven on v79 only — no
+     * chip that genuinely lacks fp16 has loaded it yet.
+     *
+     * ⚠ Sizes: `_8gen2` is 512 + 512×768 (the portrait patch is its own 5.8 MB
+     * archive, cut against THIS `unet.bin`). `_min` is 512 alone — its patches
+     * exist but measured 10.8 min per image, so they are not published. 768×512
+     * is built and quality-equal but withheld at 21.7 s against 9.3 s on 2.49.
+     *
+     * ⚠ Self-contained: its CLIP and VAE are NOT xororz's AbsoluteReality's
+     * (0/196 and 0/248 tensors bit-identical, measured in DreamUI), so nothing
+     * is shared with that entry.
+     */
+    private val absrealityInpaint = ModelSpec(
+        id = "absreality_inpaint",
+        // ⚠⚠ The label stays a LITERAL. `ModelCatalog` is a top-level object:
+        // this initializer runs while the class loader is still working and
+        // before `Application.onCreate`, so `NmApp` holds no Context and a
+        // resource read here would cache the English fallback for the whole
+        // process. The screen translates it instead
+        // ([com.abrah.nightmare.ui.ModelSpec.labelText]).
+        label = "AbsoluteReality Inpaint",
+        builds = listOf(
+            Build(
+                TIER, "AbsoluteRealityInpaint_qnn2.28fix228c$TIER.zip", 1_232_146_314L, ARCH_8GEN2, 8,
+                extras = listOf("AbsoluteRealityInpaint_qnn2.28fix228c_res512x768$TIER.zip" to 5_841_671L),
+            ),
+            // ⚠ No `_8gen1`: only xororz publishes that tier, so an 8 Gen 1
+            // takes `_min` here, as it does in DreamUI.
+            Build(TIER_MIN, "AbsoluteRealityInpaint_qnn2.28fix228c$TIER_MIN.zip", 1_298_100_138L, ARCH_MIN, 2),
+        ),
+        // ⚠ Its BASE's starter text, not DreamUI's negative-only entry. There it
+        // was an inpaint-only model; here it also does text to image, and an
+        // empty prompt cleared the box when a node was switched onto it.
+        prompt = P_ABSOLUTE,
+        negative = NEG_ABSOLUTE,
+        backendType = SD15_NPU_INPAINT,
+        baseUrl = "https://huggingface.co/AbrahamPJ/absolutereality-inpainting-qnn/resolve/main/",
+    )
+
+    val sd15Models: List<ModelSpec> = listOf(
+        sd15(
+            V1_MODEL, "AbsoluteReality", "AbsoluteReality",
+            1_054_661_172L, 1_059_732_796L, 993_451_663L,
+            prompt = P_ABSOLUTE,
+            negative = NEG_ABSOLUTE,
+        ),
+        // ⭐ Directly under its base, where someone looking for AbsoluteReality
+        // finds both (the user's call, 2026-09-19).
+        absrealityInpaint,
+        sd15(
+            "anythingv5", "AnythingV5", "AnythingV5",
+            1_057_820_237L, 1_061_290_117L, 995_100_213L,
+            prompt = P_ANIME_GIRL, negative = NEG_ANIME,
+        ),
+        sd15(
+            "chilloutmix", "ChilloutMix", "ChilloutMix",
+            1_069_856_038L, 1_073_617_353L, 1_007_485_231L,
+            prompt = "RAW photo, best quality, realistic, photo-realistic, masterpiece, " +
+                "1girl, upper body, facing front, portrait, white shirt",
+            negative = NEG_CHILLOUT,
+        ),
+        sd15(
+            "cuteyukimix", "CuteYukiMix", "CuteYukiMix",
+            1_057_299_173L, 1_059_582_346L, 993_526_703L,
+            prompt = P_ANIME_GIRL, negative = NEG_ANIME,
+        ),
+        sd15(
+            "qteamix", "QteaMix", "QteaMix",
+            1_056_615_116L, 1_061_160_208L, 995_347_176L,
+            prompt = P_QTEA, negative = NEG_ANIME,
+        ),
+    )
+
+    // ---- SDXL ------------------------------------------------------------
+
+    /**
+     * ⚠ The fallback for the eight of the ten with **no upstream entry** —
+     * DreamUI's own list, so this is DreamUI's prompt, unchanged.
+     *
+     * ⚠⚠ It is a fallback rather than the SDXL prompt: the two ids upstream
+     * also publishes take upstream's text ([P_CYBERREALISTIC], [P_ILLUSTRIOUS]),
+     * per the SD 1.5 rule above. Inventing one per checkpoint for the other
+     * eight would be guessing at what their authors wanted, which is the thing
+     * `config.json` exists to stop us doing.
+     */
+    // ⚠⚠ It is the FAMILY default now, not a prompt of its own. It used to
+    // append "a majestic cat sitting on a windowsill at sunset," — a subject
+    // this project invented for eight checkpoints whose authors said nothing,
+    // which is the guessing the paragraph above says not to do, and a cat the
+    // user had to delete before typing. The user's ask, 2026-09-15.
+    private const val P_SDXL = GP_SDXL
+
+    // ⭐ Two of the ten ARE upstream models, and upstream gives each its own
+    // text. ⚠ CyberRealistic's negative is already [NEG_GENERAL] byte for byte,
+    // so only the prompt differs; Illustrious is an anime checkpoint and takes
+    // the anime negative, which is why the shared SDXL default cannot serve it.
+    private const val P_CYBERREALISTIC =
+        "masterpiece, best quality, " +
+            "a majestic cat sitting on a windowsill at sunset,"
+    private const val P_ILLUSTRIOUS =
+        "1girl, solo, blue twintails, very long hair, bangs, blue eyes, jewelry, " +
+            "necklace, hair bow, off-shoulder white frilled dress, bare shoulders, " +
+            "collarbone, underwater, floating hair, reaching towards viewer, " +
+            "air bubbles, blue theme, blurry foreground, masterpiece"
+    // ⚠ ONE home: this is byte-for-byte [Family.SDXL]'s general negative, so it
+    // is that constant rather than a second copy of it.
+    private const val NEG_GENERAL = GP_SDXL_NEG
+
+    /**
+     * One of xororz's SDXL checkpoints.
+     *
+     * ⚠ Nothing is shared with SD 1.5 — different text encoders, different VAE,
+     * different everything — so each is a self-contained ~3.7 GB install. ⚠⚠ And
+     * ~3.7 GB is the DOWNLOAD; [ModelInstaller] needs roughly twice that free
+     * because the archive and its unpacked copy are on disk at once.
+     *
+     * ⭐ It needs **no new node types**: `sd.clip_encode → COND → sd.sample`
+     * works unchanged because COND is an opaque HANDLE, so SDXL's two encoders
+     * are the backend's problem and never the graph's. That is the payoff of
+     * the handle rule in `docs/ARCHITECTURE.md` §3.
+     */
+    private fun sdxl(
+        id: String, label: String, archive: String, bytes: Long,
+        // ⚠ Defaulted rather than required: eight of the ten have no upstream
+        // entry to copy from, and inventing a prompt per checkpoint is guessing.
+        prompt: String = P_SDXL,
+        negative: String = NEG_GENERAL,
+    ) = ModelSpec(
+        id = id,
+        label = label,
+        // ⚠⚠ ONE build, and that is the whole SDXL device story: xororz
+        // publishes `_8gen3` only -- 46 files, no `min`. So on anything below a
+        // v75 HTP there is no SDXL build at all, not a slower one, and
+        // `buildFor` correctly answers null rather than offering 3.5 GB the
+        // chip would reject at load.
+        builds = listOf(Build(SDXL_TIER, archive, bytes, minArch = 75, minVtcmMb = 8)),
+        prompt = prompt,
+        negative = negative,
+        family = Family.SDXL,
+        backendType = SDXL_NPU,
+        // ⚠⚠ Forced by the backend, not chosen here -- see [SDXL_NPU_RES].
+        // ⇒ The locked widgets read this.
+        resolutions = listOf(SDXL_NPU_RES),
+        baseUrl = SDXL_BASE_URL,
+        requiredFiles = SDXL_REQUIRED,
+        tier = SDXL_TIER,
+        minHtpArch = 75,
+        // ⚠ Every SDXL checkpoint, as in DreamUI: a ~3× UNet at 1024² does not
+        // fit beside its VAE and two encoders.
+        lowram = true,
+    )
+
+    /**
+     * ⚠ A curated spread rather than all 46 in the repo — each is ~3.7 GB, and
+     * the list is only useful if a user can tell the entries apart. These are
+     * DreamUI's own ten, in its order. Adding another is one line: id, label,
+     * filename, byte size from the HF listing.
+     */
+    val sdxlModels: List<ModelSpec> = listOf(
+        sdxl("sdxl_base", "SDXL Base 1.0", "sdxl_base_qnn2.28$SDXL_TIER.zip", 3_753_226_114L),
+        sdxl("sdxl_dreamshaper", "DreamShaper XL", "dreamshaper_qnn2.28$SDXL_TIER.zip", 3_753_755_544L),
+        sdxl("sdxl_juggernaut", "Juggernaut XL", "juggernaut_qnn2.28$SDXL_TIER.zip", 3_747_687_306L),
+        sdxl("sdxl_realvis", "RealVis XL v5", "realvis_xl_v5_qnn2.28$SDXL_TIER.zip", 3_499_694_289L),
+        sdxl("sdxl_epicrealism", "epiCRealism XL", "epic_realism_qnn2.28$SDXL_TIER.zip", 3_502_991_005L),
+        sdxl(
+            "sdxl_cyberrealistic", "CyberRealistic v10",
+            "cyber_realistic_v10_qnn2.28$SDXL_TIER.zip", 3_745_235_842L,
+            prompt = P_CYBERREALISTIC,
+        ),
+        sdxl(
+            "sdxl_illustrious", "Illustrious v16",
+            "illustrious_v16_qnn2.28$SDXL_TIER.zip", 3_726_876_852L,
+            prompt = P_ILLUSTRIOUS, negative = NEG_ANIME,
+        ),
+        sdxl("sdxl_animagine", "Animagine v4", "animagine_v4_qnn2.28$SDXL_TIER.zip", 3_752_469_362L),
+        sdxl("sdxl_pony", "Pony Diffusion v6 XL", "ponydiffusion_v6xl_qnn2.28$SDXL_TIER.zip", 3_725_876_252L),
+        sdxl("sdxl_novaanime", "NovaAnime v19", "novaanime_v19_qnn2.28$SDXL_TIER.zip", 3_732_162_768L),
+    )
+
+    /**
+     * ⭐ One of xororz's Anima checkpoints — `xororz/anima-qnn`.
+     *
+     * ⚠⚠ The defaults are READ, not chosen: all nine archives' `config.json`
+     * were fetched by range request on 2026-09-16 and every one says `euler`,
+     * 10 steps, cfg 1 — they are TURBO (distilled) checkpoints, where 20 steps
+     * at 7.5 does not fail but burns. Measured on the phone the same day:
+     * 4 steps is visibly hazy, 8 matched 10 on the one prompt that finished
+     * (`docs/MODELS.md` §8). ⇒ The author's 10 stands.
+     *
+     * ⚠ The PROMPT is not copied: all nine ship the same demo (a girl holding a
+     * sign that reads "My phone is burning!"), so they take the family's.
+     */
+    private fun anima(id: String, label: String, archive: String, bytes: Long) = ModelSpec(
+        id = id,
+        label = label,
+        // ⚠ `_8gen3` only, like SDXL — a v75 context, so nothing older can load it.
+        builds = listOf(Build(SDXL_TIER, archive, bytes, minArch = 75, minVtcmMb = 8)),
+        prompt = "",
+        negative = "",
+        family = Family.ANIMA,
+        backendType = ANIMA_NPU,
+        resolutions = listOf(ANIMA_NPU_RES),
+        baseUrl = ANIMA_BASE_URL,
+        requiredFiles = ANIMA_REQUIRED,
+        tier = SDXL_TIER,
+        minHtpArch = 75,
+        // ⚠⚠ Two ~2 GB DiT halves, a 1.2 GB Qwen encoder and a 16-channel VAE:
+        // upstream defaults `anima_lowram` ON, and on an 11.4 GB phone even that
+        // was killed while the phone was in use (`docs/MODELS.md` §8).
+        lowram = true,
+        scheduler = "euler",
+        steps = 10,
+        cfg = 1.0,
+    )
+
+    /** ⚠ All nine xororz publishes, in the repo's order; sizes off the HF listing. */
+    val animaModels: List<ModelSpec> = listOf(
+        anima("anima_base", "Anima Base v1 Turbo", "anima_base_v1_turbo_qnn2.28$SDXL_TIER.zip", 4_290_828_128L),
+        anima("anima_yume", "AnimaYume v1 Turbo", "animayume_v1_turbo_qnn2.28$SDXL_TIER.zip", 4_287_096_388L),
+        anima("anima_cyberrealistic", "CyberRealistic v3 Turbo", "cyberrealistic_v3_turbo_qnn2.28$SDXL_TIER.zip", 4_853_683_064L),
+        anima("anima_miaomiao", "MiaoMiao v1.4 Turbo", "miaomiao_v1.4_turbo_qnn2.28$SDXL_TIER.zip", 4_299_044_507L),
+        anima("anima_novaanime25", "NovaAnime v2.5 Turbo", "novaanime_v2.5_turbo_qnn2.28$SDXL_TIER.zip", 4_290_744_025L),
+        anima("anima_novaanime3", "NovaAnime v3 Turbo", "novaanime_v3_turbo_qnn2.28$SDXL_TIER.zip", 4_292_018_537L),
+        anima("anima_rin_flanime", "Rin FlAnime v1 Turbo", "rin_flanime_v1_turbo_qnn2.28$SDXL_TIER.zip", 4_854_654_219L),
+        anima("anima_sam_realistic", "SAM Anima Realistic v2.3 Turbo", "sam_anima_realistic_v2.3_turbo_qnn2.28$SDXL_TIER.zip", 4_290_163_015L),
+        anima("anima_wai", "WAI Anima v1 Turbo", "wai_anima_v1_turbo_qnn2.28$SDXL_TIER.zip", 4_281_870_655L),
+    )
+
+    // ---- DiT (FLUX.2 Klein, Z-Image) -------------------------------------
+
+    private const val HF = "https://huggingface.co/"
+
+    /**
+     * ⚠ The Qwen3 tokenizer both packages carry — the backend loads a
+     * `tokenizer.json` from every model dir at startup, and `/tokenize` counts
+     * the prompt with it. Byte-identical in both upstream sources.
+     */
+    private val DIT_TOKENIZER_BYTES = 11_422_654L
+
+    /**
+     * ⭐⭐ One DiT package: four plain files from the repositories that publish
+     * them, never rehosted — upstream local-dream 3.0's `packageFiles`, verbatim
+     * URLs, sizes read from the served Content-Length (2026-09-19).
+     *
+     * ⚠⚠ **v79 and newer only** (8 Elite, 8 Elite Gen 5). The engine ships
+     * Hexagon skels for v79/v81 alone; upstream gates on SM8750+, which is the
+     * same set of phones as this arch gate. ⚠ One pseudo-build carries the gate
+     * and the total size — there is no archive to fetch.
+     */
+    private fun dit(
+        id: String, label: String, family: Family, type: String, steps: Int,
+        files: List<RemoteFile>,
+        /**
+         * ⭐⭐ On a DiT package `--lowram` does ONE thing, and it is not what it
+         * does for SDXL: `main.cpp` turns it into the engine's
+         * `params_backend = "te=disk"`, which streams the text encoder's
+         * parameters from disk instead of holding them resident. It does not
+         * load and release stages.
+         *
+         * ⚠ So it is a property of the MODEL's SIZE against this class of
+         * phone, which is why it is a per-entry argument rather than a family
+         * flag: FLUX.2 Klein fits without it and Z-Image does not.
+         */
+        lowram: Boolean = false,
+    ) = ModelSpec(
+        lowram = lowram,
+        id = id,
+        label = label,
+        builds = listOf(Build(TIER_DIT, "", files.sumOf { it.bytes }, DIT_MIN_ARCH, 8)),
+        // ⚠ Upstream's own starter prompt for both checkpoints.
+        prompt = "a lovely cat wearing black sunglasses, studio photo,",
+        negative = "",
+        family = family,
+        backendType = type,
+        resolutions = listOf(DIT_RES),
+        requiredFiles = files.map { it.name },
+        scheduler = "euler",
+        steps = steps,
+        cfg = 1.0,
+        files = files,
+    )
+
+    /** ⚠ The tier label a DiT build reports — it is a device gate, not an archive. */
+    const val TIER_DIT = "_v79"
+
+    /**
+     * ⭐⭐⭐ **The HTP arch a DiT model and the video models need** — v79,
+     * which is the Snapdragon 8 Elite and everything after it.
+     *
+     * ⚠⚠ Named because THREE things gate on it and a literal 79 in each
+     * would be three chances to drift: every `dit()` build, and the FLUX edit
+     * and video FLOWS, which refuse to open below it
+     * (`canvas/Workflows.kt`). The engine ships v79/v81 skels and the video
+     * contexts are v79 binaries — `docs/NEODRAGON.md` §4, `docs/MODELS.md` §9.
+     *
+     * ⚠ A QNN context runs on the arch it was built for and every newer one,
+     * so this is a floor and never an allowlist: gen 5 needed no entry.
+     */
+    const val DIT_MIN_ARCH = 79
+
+    val ditModels: List<ModelSpec> = listOf(
+        dit(
+            "flux2_klein_4b", "FLUX.2 Klein 4B", Family.FLUX2, KLEIN, steps = 4,
+            // ⭐⭐⭐ **NO `lowram`, and the reason it was switched on was
+            // a misreading.** It was set in 1.5.514 and reverted 2026-09-20.
+            //
+            // The reasoning was: a 1024x1024 edit with a reference dies at
+            // `conditioner.hpp ... parse`, which is the TEXT ENCODER, so stream
+            // the text encoder off disk (`te=disk`) the way Z-Image does one
+            // entry below. It did not help, and measurement later said why: the
+            // text encoder is not what is expensive. Its compute buffer is
+            // **65 MB in every leg** — identical for zero, one and two
+            // references — and its 1.67 GB of weights are explicitly released
+            // before the DiT loads. The kill lands while it is resident, not
+            // because of it: what is underneath is VAE scratch, 1536 MB of VRAM
+            // plus 524 MB of RAM **per reference** at 1024x1024
+            // ([SdSampler.REF_ENCODED_AT_CANVAS]).
+            //
+            // ⚠⚠⚠ Which makes `lowram` here a pure loss: it slowed prompt
+            // encoding on EVERY FLUX render, including plain text-to-image that
+            // was never near the limit, and bought nothing on the one case it
+            // was added for — the 1024x1024 edit is still reaped with it on.
+            //
+            // ⚠⚠ The general lesson, and it is the third time this file has
+            // paid for it: **the stage a process dies AT is not the stage that
+            // cost the memory.** Reaching for the lever that matches the last
+            // log line is how 1.5.511 tuned the VAE tile threshold, how 1.5.513
+            // and 1.5.516 bounded reference pixels, and how this line got set.
+            // All four were reasoned, all four were wrong, and one measurement
+            // with a control (`dit_edit`, and `img2img_0.65` as the leg that
+            // survives the same work) ended it. `notes/PROGRESS.md`.
+            //
+            // ⇒ Klein is 57% of RAM and stays resident; it needs no staging.
+            // Z-Image below is a different case and keeps its own `lowram`.
+            files = listOf(
+                RemoteFile(HF + "black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors", "dit.safetensors", 4_070_624_520L),
+                RemoteFile(HF + "zhiyuanasad/flux2_klein_adreno/resolve/main/llm.gguf", "llm.gguf", 2_262_670_048L),
+                RemoteFile(HF + "zhiyuanasad/flux2_klein_adreno/resolve/main/vae.safetensors", "vae.safetensors", 336_213_556L),
+                RemoteFile(HF + "Qwen/Qwen3-4B/resolve/main/tokenizer.json", "tokenizer.json", DIT_TOKENIZER_BYTES),
+            ),
+        ),
+        // ⭐⭐⭐ **`lowram` because it does not FIT, measured 2026-09-19.** This
+        // entry used to carry a note saying Z-Image "crashes on the dev phone
+        // (8 Elite) in upstream LocalDream too … not broken, not yet mature",
+        // which was inference from upstream's reports rather than a reading of
+        // ours. The log says something narrower and actionable: it is not a
+        // crash at all. The engine loads, prints
+        //
+        //   total params memory size = 8193.44MB
+        //   text_encoders 2158.46MB | diffusion_model 5874.97MB | vae 160.00MB
+        //   weights will be prepared lazily
+        //
+        // takes the request, and ~4 s into preparing those weights **lmkd**
+        // reclaims the app — `oom_score_adj 0`, foreground, and it takes
+        // whatever else is running down with it. No tombstone, no `F DEBUG`
+        // block. 8.2 GB of weights on an 11.7 GB phone.
+        //
+        // ⚠⚠ **The RESOLUTION is not the lever**, which is the trap here: the
+        // report was "512x512 crashed", and 512 cannot help because the model
+        // size is fixed and only activations scale. `te=disk` drops the text
+        // encoder to ~6.0 GB resident — about FLUX.2 Klein's footprint, and
+        // that one renders on this phone.
+        dit(
+            "z_image_turbo", "Z-Image Turbo", Family.ZIMAGE, ZIMAGE, steps = 8,
+            lowram = true,
+            files = listOf(
+                RemoteFile(HF + "Kijai/Z-Image_comfy_fp8_scaled/resolve/main/z-image-turbo_fp8_scaled_e4m3fn_KJ.safetensors", "dit.safetensors", 6_158_115_074L),
+                RemoteFile(HF + "zhiyuanasad/z_image_turbo_adreno/resolve/main/llm.gguf", "llm.gguf", 2_262_670_048L),
+                RemoteFile(HF + "zhiyuanasad/z_image_turbo_adreno/resolve/main/vae.safetensors", "vae.safetensors", 335_304_388L),
+                RemoteFile(HF + "Tongyi-MAI/Z-Image-Turbo/resolve/main/tokenizer/tokenizer.json", "tokenizer.json", DIT_TOKENIZER_BYTES),
+            ),
+        ),
+    )
+
+    fun byId(id: String): ModelSpec? = all.firstOrNull { it.id == id }
+
+    fun installed(context: Context): List<ModelSpec> = all.filter { it.installed(context) }
+
+    /**
+     * ⭐⭐ The backend `--type` a model needs -- **the one function both the
+     * launch and every `contextKey()` read**.
+     *
+     * ⚠⚠ That is the whole point of it existing. `--type` was a literal in two
+     * places (`BackendProcess` and three node types), and two literals that must
+     * agree are two literals that eventually will not: a node keyed `sd15npu`
+     * against a process launched `sdxl` does not fail, it renders at the wrong
+     * size in silence.
+     *
+     * ⚠ An id that is not in the catalogue falls back to the SD 1.5 default
+     * rather than throwing. A model directory pushed by hand over adb is a real
+     * developer path and has no catalogue entry, and that is exactly what this
+     * returned before the field existed -- so the fallback is today's behaviour,
+     * not a new guess. It stops being harmless when a second family ships, at
+     * which point an unknown id has no honest answer; the `model` param is
+     * locked, so by then only a hand-edited workflow file can produce one.
+     */
+    fun backendTypeOf(modelId: String): String =
+        byId(modelId)?.backendType ?: SD15_NPU
+
+    /** The size a new node on [modelId] is built at. ⚠ Same fallback as [backendTypeOf]. */
+    fun resolutionOf(modelId: String): Res = byId(modelId)?.native ?: SD15_NPU_RES
+}
+
+/**
+ * Which model the app is currently set to use.
+ *
+ * ⚠⚠ ONE source of truth, read by BOTH the backend launch and the `model`
+ * widget default. They cannot be allowed to disagree: the backend is launched
+ * with `--model_dir <id>` while a node's `model` param only feeds the context
+ * key, so a graph naming a different checkpoint from the running server does
+ * not fail — it renders, silently, with the server's model. A picture that
+ * looks almost right, from a mismatch nothing reports.
+ *
+ * ⚠ A process-global rather than a parameter because [NODE_TYPES] is a static
+ * registry built without a `Context`. It is loaded once in [MainActivity].
+ */
+object SelectedModel {
+
+    private const val PREFS = "nightmare"
+    private const val KEY = "model"
+    private const val KEY_RES = "resolution"
+
+    @Volatile
+    var id: String = V1_MODEL
+        private set
+
+    /**
+     * ⭐⭐ The resolution every backend node on a new graph is sized to — the
+     * `width`/`height` thirds of the [ContextKey], chosen graph-wide rather
+     * than per node.
+     *
+     * ⚠⚠ **Graph-wide on purpose.** §5.2 pins ONE context key per graph, and
+     * `--patch` binds at backend launch exactly as `--type` and `--model_dir`
+     * do. A per-node size widget would make the executor's "needs 2 backend
+     * contexts" refusal a normal-path experience for something the user chose
+     * deliberately; picking it beside the model instead means [contextKeyRetarget]
+     * rewrites every node at once and the graph still names one key. The pin is
+     * untouched.
+     *
+     * ⚠ Stored per MODEL, not globally: 768x512 is meaningful on SD 1.5 and
+     * impossible on SDXL, so one shared value would follow the user across a
+     * family switch into a size that model cannot serve.
+     */
+    @Volatile
+    var res: Res = ModelCatalog.SD15_NPU_RES
+        private set
+
+    /**
+     * ⭐ The sizes the selected model can serve, **cached**.
+     *
+     * ⚠⚠ Cached because [ModelSpec.availableResolutions] reads the disk and the
+     * places that need this list have no [Context]: the size chips are built
+     * from a `NodeType.widgets` getter and drawn by a composable that must stay
+     * a function of its arguments so the goldens can render it. Reading
+     * `listFiles()` from either would be a disk hit inside a recomposition.
+     *
+     * ⚠ Refreshed wherever the answer can change — [load], [set], and after an
+     * install or a delete ([refresh]). A stale list offers a size whose patch is
+     * gone, and `BackendProcess.start` then refuses the launch by name, which is
+     * the right failure but a late one.
+     */
+    @Volatile
+    var resolutions: List<Res> = listOf(ModelCatalog.SD15_NPU_RES)
+        private set
+
+    /** ⚠ Call after anything that adds or removes files in a model directory. */
+    fun refresh(context: Context) {
+        perModel.clear()
+        resolutions = spec.availableResolutions(context)
+    }
+
+    private val perModel = java.util.concurrent.ConcurrentHashMap<String, List<Res>>()
+
+    /**
+     * ⭐⭐ The sizes ANY model can serve, cached the same way as [resolutions].
+     *
+     * ⚠⚠ A sampler's size chips must come from ITS model, not from this
+     * selection. Since the model became a per-node choice (`ARCHITECTURE.md`
+     * §4) the two differ routinely, and reading [resolutions] showed an SD 1.5
+     * node the one size SDXL has — so no size chooser at all (2026-09-17).
+     * ⚠ Cleared by [refresh], which every install and delete already calls.
+     */
+    fun resolutionsOf(context: Context, spec: ModelSpec): List<Res> =
+        perModel.getOrPut(spec.id) { spec.availableResolutions(context) }
+
+    /**
+     * The catalogue entry in use -- family, native resolution and `--type`.
+     *
+     * ⚠ Never null: [load] and [set] both refuse an id [ModelCatalog] does not
+     * know, so the fallback here is unreachable and exists only so callers do
+     * not each invent their own.
+     */
+    val spec: ModelSpec
+        get() = ModelCatalog.byId(id) ?: ModelCatalog.byId(V1_MODEL)!!
+
+    /**
+     * ⚠ Falls back to [V1_MODEL] when the stored id names a model that is gone.
+     *
+     * ⚠⚠ **[CustomModels.scan] must have run first.** This drops a stored id
+     * the catalogue cannot see, and an imported model is only in the catalogue
+     * after a scan — so loading first would silently reset a user whose
+     * selected checkpoint is a custom one back to [V1_MODEL] on every launch,
+     * and the graph-authoritative restore would then relaunch the backend to
+     * "correct" it. The scan is therefore unconditional and comes first in
+     * [MainActivity] and [OpService]; it is cheap (one stat per directory).
+     */
+    fun load(context: Context) {
+        CustomModels.scan(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val stored = prefs.getString(KEY, null)
+        id = stored?.takeIf { ModelCatalog.byId(it) != null } ?: V1_MODEL
+        res = readRes(context, prefs.getString(resKey(id), null))
+        refresh(context)
+    }
+
+    fun set(context: Context, newId: String) {
+        require(ModelCatalog.byId(newId) != null) { "unknown model \"$newId\"" }
+        id = newId
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY, newId).apply()
+        // ⚠⚠ The resolution MUST be re-resolved here and not carried over. The
+        // previous model's size may be one this one cannot serve at all -- every
+        // SDXL size but 1024² , or a patch this checkpoint's archive did not
+        // ship -- and a stale value would reach `--patch` as a file that is not
+        // there. Re-reading per model is what makes [setRes] safe to be dumb.
+        res = readRes(context, prefs.getString(resKey(newId), null))
+        refresh(context)
+    }
+
+    /**
+     * ⚠ Refuses a size the model cannot serve, rather than storing it and
+     * failing at launch. The caller has [ModelSpec.availableResolutions] and
+     * this is the backstop for a stored value that has gone stale -- a model
+     * re-downloaded from a build with fewer patches, say.
+     */
+    fun setRes(context: Context, newRes: Res) {
+        val ok = spec.availableResolutions(context)
+        require(newRes in ok) {
+            "\"${spec.label}\" cannot render $newRes — it serves ${ok.joinToString(", ")}"
+        }
+        res = newRes
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(resKey(id), "${newRes.width}x${newRes.height}").apply()
+    }
+
+    private fun resKey(modelId: String) = "$KEY_RES.$modelId"
+
+    /**
+     * ⚠ Falls back to the model's native size whenever the stored string is
+     * absent, malformed, or names a resolution this install can no longer
+     * serve. All three are the same answer and none is an error.
+     */
+    private fun readRes(context: Context, stored: String?): Res {
+        val native = spec.native
+        val parts = stored?.split("x") ?: return native
+        val w = parts.getOrNull(0)?.toIntOrNull() ?: return native
+        val h = parts.getOrNull(1)?.toIntOrNull() ?: return native
+        val want = Res(w, h)
+        return if (want in spec.availableResolutions(context)) want else native
+    }
+}
